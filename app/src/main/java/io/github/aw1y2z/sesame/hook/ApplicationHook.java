@@ -98,8 +98,8 @@ public class ApplicationHook extends XposedModule {
     // 新增：全局静态变量，存储当前进程名
     public static volatile String processName; // 供其他方法（如 startIfNeeded）调用
 
-    /** 模块 App 自己的包名：须与 app/build.gradle 的 applicationId 一致，用于校验广播发送方 */
-    private static final String MODULE_PACKAGE_NAME = "io.github.aw1y2z.sesame";
+    /** 模块 App 自己的包名：须与 app/build.gradle 的 applicationId（含 .mod 后缀）一致，用于校验广播发送方 */
+    private static final String MODULE_PACKAGE_NAME = "io.github.aw1y2z.sesame.mod";
     /** adb shell 的 uid：`adb shell am broadcast` 以它发送，放行以便命令行调试 */
     private static final int SHELL_UID = 2000;
 
@@ -1316,7 +1316,7 @@ public class ApplicationHook extends XposedModule {
      * 校验广播发送方是否可信。
      * <p>
      * 该 Receiver 由运行时注册，Android 13 起必须带 {@code RECEIVER_EXPORTED}：模块 App
-     * （{@code io.github.aw1y2z.sesame}）与支付宝是两个不同 UID，跨进程送达只能靠导出，
+     * （{@code io.github.aw1y2z.sesame.mod}）与支付宝是两个不同 UID，跨进程送达只能靠导出，
      * 所以"任意应用都能触发 restart / reLogin"只能在收到广播后按发送方 uid 拦。
      * <p>
      * 白名单：本进程（支付宝自己发的，含由系统代发的 PendingIntent）、模块 App、adb shell（调试用）。

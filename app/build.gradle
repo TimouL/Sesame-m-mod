@@ -42,6 +42,7 @@ android {
     namespace 'io.github.aw1y2z.sesame'
     defaultConfig {
         applicationId "io.github.aw1y2z.sesame"
+        applicationIdSuffix ".mod"
         minSdk 26
         //noinspection ExpiredTargetSdkVersion
         targetSdk 34
@@ -104,7 +105,7 @@ androidComponents {
                     abiTag = "-" + f.getIdentifier()
                 }
             }
-            output.outputFileName.set("Sesame-M-Normal${abiTag}-${project.appVersion}.apk")
+            output.outputFileName.set("Sesame-M-Mod-Normal${abiTag}-${project.appVersion}.apk")
         }
     }
 }
