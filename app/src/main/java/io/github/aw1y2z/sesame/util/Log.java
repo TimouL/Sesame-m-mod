@@ -143,6 +143,14 @@ public class Log {
                     .flattener(new PatternFlattener("{d HH:mm:ss.SSS} {t}: {m}"))
                     .build()).build();
 
+    private static final Logger magicBoxLogger = XLog.tag("MAGICBOX").printers(
+            new FilePrinter.Builder(FileUtil.LOG_DIRECTORY_FILE.getPath())
+                    .fileNameGenerator(new CustomDateFileNameGenerator("magicbox"))
+                    .backupStrategy(new NeverBackupStrategy())
+                    .cleanStrategy(new NeverCleanStrategy())
+                    .flattener(new PatternFlattener("{d HH:mm:ss.SSS} {t}: {m}"))
+                    .build()).build();
+
     private static final Logger farmLogger = XLog.tag("FARM").printers(
             new FilePrinter.Builder(FileUtil.LOG_DIRECTORY_FILE.getPath())
                     .fileNameGenerator(new CustomDateFileNameGenerator("farm"))
@@ -308,6 +316,11 @@ public class Log {
         writeModuleLog(s, io.github.aw1y2z.sesame.data.AppConfig.INSTANCE.getEnableGoldenBeansLog(), goldenBeansLogger);
     }
 
+    public static void magicBox(String s) {
+        countModuleLog();
+        writeModuleLog(s, io.github.aw1y2z.sesame.data.AppConfig.INSTANCE.getEnableMagicBoxLog(), magicBoxLogger);
+    }
+
     public static void farm(String s) {
         countModuleLog();
         writeModuleLog(s, io.github.aw1y2z.sesame.data.AppConfig.INSTANCE.getEnableFarmLog(), farmLogger);
@@ -352,6 +365,8 @@ public class Log {
             farm(s);
         } else if ("GOLDENBEANS".equals(tag)) {
             goldenBeans(s);
+        } else if ("MAGIC_BOX".equals(tag)) {
+            magicBox(s);
         } else {
             other(s);
         }

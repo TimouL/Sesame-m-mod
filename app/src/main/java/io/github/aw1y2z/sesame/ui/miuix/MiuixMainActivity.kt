@@ -662,6 +662,14 @@ fun LogsTab(activity: MiuixMainActivity) {
             activity.broadcastReloadConfig()
             if (!it) FileUtil.clearLog("goldenbeans")
         }
+        var magicBox by remember { mutableStateOf(AppConfig.INSTANCE.enableMagicBoxLog ?: true) }
+        LogSwitchRow("魔盒记录", magicBox, onClick = { openLog(activity, LogType.MAGICBOX) }) {
+            magicBox = it
+            AppConfig.INSTANCE.enableMagicBoxLog = it
+            AppConfig.save()
+            activity.broadcastReloadConfig()
+            if (!it) FileUtil.clearLog("magicbox")
+        }
         var other by remember { mutableStateOf(AppConfig.INSTANCE.enableOtherLog ?: true) }
         LogSwitchRow("其他记录", other, onClick = { openLog(activity, LogType.OTHER) }) {
             other = it

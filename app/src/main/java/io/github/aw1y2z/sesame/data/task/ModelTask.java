@@ -19,6 +19,7 @@ import io.github.aw1y2z.sesame.util.TaskCancelledException;
 import io.github.aw1y2z.sesame.util.TimeUtil;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -261,6 +262,15 @@ public abstract class ModelTask extends Model {
                 }
             }
         }
+    }
+
+    /**
+     * 本模块的可执行功能单元（「执行任务」弹窗的列表行）。
+     * <p>默认整模块为一个单元（key 取类名）；有多个独立功能的模块覆盖此方法逐个列出。
+     * UI 进程也会调用（弹窗列数据），实现不得依赖 libxposed 类。
+     */
+    public List<ExecUnit> getExecUnits() {
+        return Collections.singletonList(new ExecUnit(getClass().getSimpleName(), getName(), ""));
     }
 
     /**

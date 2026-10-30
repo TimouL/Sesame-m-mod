@@ -38,6 +38,7 @@ public class AppConfig {
     private Boolean enableGoldenBeansLog = true;
     private Boolean enableFarmLog = true;
     private Boolean enableOtherLog = true;
+    private Boolean enableMagicBoxLog = true;
     private Boolean enableDebugLog = false;
     private Boolean enableViewErrorLog = true;
     private Boolean enableViewRuntimeLog = true;
@@ -128,6 +129,9 @@ public class AppConfig {
 
     public Boolean getEnableGoldenBeansLog() { return enableGoldenBeansLog; }
     public void setEnableGoldenBeansLog(Boolean value) { enableGoldenBeansLog = value; }
+
+    public Boolean getEnableMagicBoxLog() { return enableMagicBoxLog; }
+    public void setEnableMagicBoxLog(Boolean value) { enableMagicBoxLog = value; }
 
     public Boolean getEnableFarmLog() { return enableFarmLog; }
     public void setEnableFarmLog(Boolean value) { enableFarmLog = value; }

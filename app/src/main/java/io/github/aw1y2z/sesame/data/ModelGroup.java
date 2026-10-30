@@ -21,6 +21,7 @@ public enum ModelGroup {
     , MEMBER("MEMBER", "会员", "svg/group/member.svg")
     , GREEN_FINANCE("GREEN_FINANCE", "经营", "svg/group/other.svg")
     , ANSWER_AI("ANSWER_AI", "AI答", "svg/group/other.svg")
+    , MAGIC_BOX("MAGIC_BOX", "魔盒", "svg/group/other.svg")
     , OTHER("OTHER", "其他", "svg/group/other.svg")
 
     ;

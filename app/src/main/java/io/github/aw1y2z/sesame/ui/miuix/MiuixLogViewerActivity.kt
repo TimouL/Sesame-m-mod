@@ -75,6 +75,7 @@ enum class LogType(val displayName: String) {
     GOLDENBEANS("金豆记录"),
     FARM("庄园记录"),
     OTHER("其他记录"),
+    MAGICBOX("魔盒记录"),
     DEBUG("抓包记录"),
     ERROR("查看异常日志"),
     RUNTIME("查看运行日志");
@@ -86,6 +87,7 @@ enum class LogType(val displayName: String) {
             GOLDENBEANS -> FileUtil.getGoldenBeansLogFile()
             FARM -> FileUtil.getFarmLogFile()
             OTHER -> FileUtil.getOtherLogFile()
+            MAGICBOX -> FileUtil.getMagicBoxLogFile()
             DEBUG -> FileUtil.getDebugLogFile()
             ERROR -> FileUtil.getErrorLogFile()
             RUNTIME -> FileUtil.getRuntimeLogFile()

@@ -1228,7 +1228,17 @@ public class ApplicationHook extends XposedModule {
                     case "com.eg.android.AlipayGphone.sesame.execute":
                         // 配置页"执行"按钮会带 group（ModelGroup 的 code）：BASE＝全部任务，
                         // 其余只跑该分组的任务；不带 group 时保持原行为（整轮执行）。
+                        // 「执行任务」弹窗还会带 units（选中功能单元 key，逗号分隔）与 force（跳过当日标记）；
+                        // 选择结果由 ExecContext 静态传递，模块线程在 run() 内读取。
                         String groupCode = intent.getStringExtra("group");
+                        String units = intent.getStringExtra("units");
+                        boolean forceExec = intent.getBooleanExtra("force", false);
+                        if (units != null) {
+                            io.github.aw1y2z.sesame.data.task.ExecContext.set(
+                                    new java.util.HashSet<>(java.util.Arrays.asList(units.split(","))), forceExec);
+                        } else {
+                            io.github.aw1y2z.sesame.data.task.ExecContext.clear();
+                        }
                         BroadcastReceiver.PendingResult r2 = goAsync();
                         new Thread(() -> {
                             try {

@@ -683,6 +683,11 @@ public class FileUtil {
         return ensureFileExists(goldenBeansLogFile);
     }
     
+    public static File getMagicBoxLogFile() {
+        File magicBoxLogFile = getFile(LOG_DIRECTORY_FILE, Log.getLogFileName("magicbox"));
+        return ensureFileExists(magicBoxLogFile);
+    }
+    
     public static File getErrorLogFile() {
         File errorLogFile = getFile(LOG_DIRECTORY_FILE, Log.getLogFileName("error"));
         return ensureFileExists(errorLogFile);

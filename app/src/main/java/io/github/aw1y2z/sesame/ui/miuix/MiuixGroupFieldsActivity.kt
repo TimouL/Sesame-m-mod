@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -14,9 +15,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -31,18 +35,23 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import io.github.aw1y2z.sesame.data.ConfigPreload
 import io.github.aw1y2z.sesame.data.ConfigV2
 import io.github.aw1y2z.sesame.data.Model
 import io.github.aw1y2z.sesame.data.ModelConfig
 import io.github.aw1y2z.sesame.data.ModelField
 import io.github.aw1y2z.sesame.data.ModelGroup
+import io.github.aw1y2z.sesame.data.task.ExecUnit
+import io.github.aw1y2z.sesame.data.task.ModelTask
 import io.github.aw1y2z.sesame.data.modelFieldExt.ChoiceModelField
 import io.github.aw1y2z.sesame.data.modelFieldExt.EmptyModelField
 import io.github.aw1y2z.sesame.data.modelFieldExt.IntegerModelField
@@ -221,24 +230,25 @@ fun GroupFieldsContent(activity: MiuixGroupFieldsActivity, userId: String?, grou
     }
 
     /**
-     * 执行当前分组的任务。
+     * 弹出「执行任务」选择面板：列出分组内各模块的可执行功能单元，
+     * 勾选后按选择执行；强制执行跳过当日状态标记。
      * 本进程是模块 App 的 UI 进程，没有 libxposed 类（ApplicationHook/hook.Toast/NotificationUtil 一碰
      * 就 NoClassDefFoundError），任务循环也不能压在主线程上，所以只发广播让注入进程去跑。
      * BASE 分组由注入侧解释为"执行全部任务"。
      */
+    var showExecSheet by remember { mutableStateOf(false) }
     val onExecute = remember {
         {
-            try {
-                val intent = Intent("com.eg.android.AlipayGphone.sesame.execute")
-                intent.putExtra("group", group.getCode())
-                activity.sendBroadcast(intent)
-                ToastUtil.show(activity, "已发送执行请求：${group.getName()}")
-            } catch (th: Throwable) {
-                Log.printStackTrace(th)
-                ToastUtil.show(activity, "执行失败: ${th.message}")
-            }
+            showExecSheet = true
             Unit
         }
+    }
+
+    if (showExecSheet) {
+        ExecSheetDialog(
+            group = group,
+            onDismiss = { showExecSheet = false }
+        )
     }
 
     Scaffold(
@@ -404,3 +414,168 @@ private fun GroupFieldRow(
 }
 
 
+
+/**
+ * 「执行任务」选择面板：底部圆角弹窗，列出分组内各模块的可执行功能单元。
+ * 勾选后「确定」按选择执行；「强制执行」跳过当日状态标记；两者均经广播交注入进程执行。
+ */
+@Composable
+private fun ExecSheetDialog(group: ModelGroup, onDismiss: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 分组内所有模块的功能单元（模块未覆盖 getExecUnits 时为整模块一行）
+    val units = remember(group) {
+        ModelTask.getModelArray().filterNotNull()
+            .filter { it.getType() == io.github.aw1y2z.sesame.data.ModelType.TASK && it.getGroup() == group }
+            .flatMap { it.getExecUnits() }
+    }
+    var selected by remember(group) { mutableStateOf(setOf<String>()) }
+    var query by remember(group) { mutableStateOf("") }
+
+    val filtered = remember(selected, query) {
+        if (query.isBlank()) units else units.filter {
+            it.title.contains(query, true) || it.desc.contains(query, true)
+        }
+    }
+    val allSelected = selected.size == units.size && units.isNotEmpty()
+    val hasSelection = selected.isNotEmpty()
+
+    fun sendBroadcast(force: Boolean) {
+        if (!hasSelection) return
+        try {
+            val intent = Intent("com.eg.android.AlipayGphone.sesame.execute")
+            intent.putExtra("group", group.getCode())
+            intent.putExtra("units", selected.joinToString(","))
+            intent.putExtra("force", force)
+            context.sendBroadcast(intent)
+            ToastUtil.show(context, "已发送执行请求：${group.getName()}（${selected.size} 项）")
+            onDismiss()
+        } catch (th: Throwable) {
+            Log.printStackTrace(th)
+            ToastUtil.show(context, "执行失败: ${th.message}")
+        }
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .background(MiuixTheme.colorScheme.surface, RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp))
+                .padding(20.dp)
+        ) {
+            Text(
+                "执行任务",
+                color = MiuixTheme.colorScheme.onBackground,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
+            Spacer(Modifier.height(14.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = "搜索",
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "${selected.size}/${units.size}",
+                    color = MiuixTheme.colorScheme.onBackground,
+                    fontSize = 15.sp
+                )
+                Spacer(Modifier.width(10.dp))
+                // 全选/全不选切换圆点
+                Box(
+                    Modifier
+                        .size(26.dp)
+                        .clip(CircleShape)
+                        .background(if (allSelected) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                        .border(2.dp, MiuixTheme.colorScheme.primary, CircleShape)
+                        .clickable {
+                            selected = if (allSelected) setOf() else units.map { it.key }.toSet()
+                        }
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .height(340.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                filtered.forEach { unit ->
+                    val checked = selected.contains(unit.key)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selected = if (checked) selected - unit.key else selected + unit.key
+                            }
+                            .padding(vertical = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(unit.title, color = MiuixTheme.colorScheme.onBackground, fontSize = 16.sp)
+                            if (unit.desc.isNotEmpty()) {
+                                Spacer(Modifier.height(3.dp))
+                                Text(
+                                    unit.desc,
+                                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(10.dp))
+                        Box(
+                            Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(if (checked) MiuixTheme.colorScheme.primary else MiuixTheme.colorScheme.onSurfaceVariantSummary)
+                                .border(2.dp, MiuixTheme.colorScheme.primary, CircleShape)
+                        )
+                    }
+                }
+                if (filtered.isEmpty()) {
+                    Text(
+                        "无可执行任务",
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        fontSize = 14.sp,
+                        modifier = Modifier.fillMaxWidth(),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            Row(Modifier.fillMaxWidth()) {
+                TextButton(
+                    text = "取消",
+                    onClick = onDismiss,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(10.dp))
+                TextButton(
+                    text = "强制执行",
+                    onClick = {
+                        if (hasSelection) sendBroadcast(force = true)
+                        else ToastUtil.show(context, "请先选择要执行的任务")
+                    },
+                    modifier = Modifier.weight(1f).alpha(if (hasSelection) 1f else 0.4f)
+                )
+                Spacer(Modifier.width(10.dp))
+                TextButton(
+                    text = "确定",
+                    onClick = {
+                        if (hasSelection) sendBroadcast(force = false)
+                        else ToastUtil.show(context, "请先选择要执行的任务")
+                    },
+                    modifier = Modifier.weight(1f).alpha(if (hasSelection) 1f else 0.4f)
+                )
+            }
+        }
+    }
+}
