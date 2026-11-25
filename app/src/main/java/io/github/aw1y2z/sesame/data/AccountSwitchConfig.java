@@ -22,6 +22,8 @@ import io.github.aw1y2z.sesame.util.StringUtil;
  * accountSwitchAccounts             账号列表，顺序即切号顺序，循环执行
  * accountSwitchFinalAccountUid      常态保持账号(一轮走完后切入该账号，再等轮次间隔)
  * accountSwitchScheduleTimes        切换账号定时执行时间点，如 ["0800","2000"]
+ * autoSlideCaptchaEnabled           自动处理滑动/拼图验证
+ * unlockAccountLimitEnabled         解除登录账号数量限制
  *
  * 任意一项保存时都会把全部配置一起写回，避免多个字段分别落盘互相覆盖。
  */
@@ -167,6 +169,45 @@ public final class AccountSwitchConfig {
         return write(snapshot);
     }
 
+    /** 是否自动处理滑动/拼图验证（默认开启） */
+    public static boolean isAutoSlideCaptchaEnabled() {
+        try {
+            return read().isAutoSlideCaptchaEnabled();
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /** 是否解除登录账号数量限制（默认开启） */
+    public static boolean isUnlockAccountLimitEnabled() {
+        try {
+            return read().isUnlockAccountLimitEnabled();
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    /**
+     * 是否需要保护本地账号登录记录。
+     * 解除账号数量限制或自动切号任一开启时都必须保护，
+     * 否则账号超过 5 个会被账号管理页清理，导致切号列表失效。
+     */
+    public static boolean isAccountListProtected() {
+        return isUnlockAccountLimitEnabled() || isAccountSwitchEnabled();
+    }
+
+    public static synchronized boolean setAutoSlideCaptchaEnabled(boolean enabled) {
+        Snapshot snapshot = readFresh();
+        snapshot.setAutoSlideCaptchaEnabled(enabled);
+        return write(snapshot);
+    }
+
+    public static synchronized boolean setUnlockAccountLimitEnabled(boolean enabled) {
+        Snapshot snapshot = readFresh();
+        snapshot.setUnlockAccountLimitEnabled(enabled);
+        return write(snapshot);
+    }
+
     /**
      * 模块启动时把支付宝已登录账号合并进配置：已有账号保持原位置，新账号追加到末尾。
      */
@@ -239,6 +280,8 @@ public final class AccountSwitchConfig {
                 }
             }
             snapshot.setAccountSwitchScheduleTimes(scheduleTimes);
+            snapshot.setAutoSlideCaptchaEnabled(json.optBoolean("autoSlideCaptchaEnabled", true));
+            snapshot.setUnlockAccountLimitEnabled(json.optBoolean("unlockAccountLimitEnabled", true));
             JSONArray array = json.optJSONArray("accountSwitchAccounts");
             List<Account> accounts = new ArrayList<>();
             if (array != null) {
@@ -278,6 +321,8 @@ public final class AccountSwitchConfig {
                 scheduleArray.put(time);
             }
             json.put("accountSwitchScheduleTimes", scheduleArray);
+            json.put("autoSlideCaptchaEnabled", snapshot.isAutoSlideCaptchaEnabled());
+            json.put("unlockAccountLimitEnabled", snapshot.isUnlockAccountLimitEnabled());
             JSONArray array = new JSONArray();
             for (Account account : snapshot.getAccountSwitchAccounts()) {
                 JSONObject object = new JSONObject();
@@ -456,6 +501,26 @@ public final class AccountSwitchConfig {
         private String accountSwitchFinalAccountUid = "";
         private List<String> accountSwitchScheduleTimes = new ArrayList<>();
         private List<Account> accountSwitchAccounts = new ArrayList<>();
+        /** 自动处理滑动/拼图验证，默认开启 */
+        private boolean autoSlideCaptchaEnabled = true;
+        /** 解除登录账号数量限制，默认开启 */
+        private boolean unlockAccountLimitEnabled = true;
+
+        public boolean isAutoSlideCaptchaEnabled() {
+            return autoSlideCaptchaEnabled;
+        }
+
+        public void setAutoSlideCaptchaEnabled(boolean autoSlideCaptchaEnabled) {
+            this.autoSlideCaptchaEnabled = autoSlideCaptchaEnabled;
+        }
+
+        public boolean isUnlockAccountLimitEnabled() {
+            return unlockAccountLimitEnabled;
+        }
+
+        public void setUnlockAccountLimitEnabled(boolean unlockAccountLimitEnabled) {
+            this.unlockAccountLimitEnabled = unlockAccountLimitEnabled;
+        }
 
         public boolean isAccountSwitchEnabled() {
             return accountSwitchEnabled;
@@ -522,6 +587,8 @@ public final class AccountSwitchConfig {
                 }
             }
             copy.accountSwitchAccounts = list;
+            copy.autoSlideCaptchaEnabled = autoSlideCaptchaEnabled;
+            copy.unlockAccountLimitEnabled = unlockAccountLimitEnabled;
             return copy;
         }
     }

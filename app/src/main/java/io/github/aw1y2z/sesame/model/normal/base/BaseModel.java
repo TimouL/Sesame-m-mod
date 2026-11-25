@@ -25,6 +25,7 @@ import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchIntervalModelFiel
 import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchListModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchTimesModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.BooleanModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.FeatureFlagBooleanModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.ChoiceModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.IntegerModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.ListModelField;
@@ -89,6 +90,17 @@ public class BaseModel extends Model {
     private static final AccountSwitchTimesModelField accountSwitchScheduleTimes =
             new AccountSwitchTimesModelField("accountSwitchScheduleTimes", "切换账号定时执行(如0800,2000)", new ArrayList<>())
                     .setDescription("到点后立即终止当前账号任务，20 秒后切到常态保持账号执行一轮；支持 HH、HHmm、HHmmss，逗号分隔");
+    // ===== 验证与账号限制（全局配置，值存在 config/config_common.json，不随账号走）=====
+    @Getter
+    private static final FeatureFlagBooleanModelField autoSlideCaptchaEnabled =
+            new FeatureFlagBooleanModelField("autoSlideCaptchaEnabled", "自动处理滑动/拼图验证", true,
+                    FeatureFlagBooleanModelField.Flag.AUTO_SLIDE_CAPTCHA)
+                    .setDescription("开启后自动识别并完成滑动与拼图验证，低版本走滑动手势，新版本走拼图截图识别");
+    @Getter
+    private static final FeatureFlagBooleanModelField unlockAccountLimitEnabled =
+            new FeatureFlagBooleanModelField("unlockAccountLimitEnabled", "解除登录账号数量限制", true,
+                    FeatureFlagBooleanModelField.Flag.UNLOCK_ACCOUNT_LIMIT)
+                    .setDescription("开启后保留本机全部登录账号记录，不再被账号管理页清理到 5 个；不解除服务端风控限制");
     
     @Override
     public String getName() {
@@ -136,6 +148,9 @@ public class BaseModel extends Model {
         modelFields.addField(accountSwitchAccounts);
         modelFields.addField(accountSwitchFinalAccountUid);
         modelFields.addField(accountSwitchScheduleTimes);
+        // 自动滑块/拼图验证、解除账号数量限制：同样是全局配置
+        modelFields.addField(autoSlideCaptchaEnabled);
+        modelFields.addField(unlockAccountLimitEnabled);
         return modelFields;
     }
     

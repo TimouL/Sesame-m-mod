@@ -66,6 +66,7 @@ import io.github.aw1y2z.sesame.rpc.bridge.RpcVersion;
 import io.github.aw1y2z.sesame.rpc.intervallimit.RpcIntervalLimit;
 import io.github.aw1y2z.sesame.util.ClassUtil;
 import io.github.aw1y2z.sesame.util.FileUtil;
+import io.github.aw1y2z.sesame.util.FeatureFlagStore;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.NotificationUtil;
 import io.github.aw1y2z.sesame.util.PermissionUtil;
@@ -83,6 +84,9 @@ import io.github.libxposed.api.XposedModuleInterface;
 public class ApplicationHook extends XposedModule {
 
     private static final String TAG = ApplicationHook.class.getSimpleName();
+
+    /** 旧版滑动手势支持的最高支付宝版本，超过则走拼图/RDS 验证链路 */
+    private static final String LEGACY_SLIDER_MAX_VERSION = "10.6.58.99999";
 
     /** 好友个人主页所属的小程序 appId（抓包取证）。 */
     private static final String PROFILE_APP_ID = "20002167";
@@ -403,7 +407,7 @@ public class ApplicationHook extends XposedModule {
                         MiniProgramHook.install(classLoader, processName);
                         // 同步调用：异步写法会被当成不阻塞，实际这里会等初始化完成
                         // 启动时不再调 getAuthCode：返回值被丢弃，且在当前版本必然失败（facade 为 null）
-                        initSimplePageManager();
+                        installFeatureHooks();
                     } catch (Exception e) {
                         Log.printStackTrace(e);
                     }
@@ -989,6 +993,9 @@ public class ApplicationHook extends XposedModule {
                 UserIdMap.initUser(userId);
                 Model.initAllModel();
                 ConfigV2.load(userId);
+                // 验证/账号限制 Hook：配置加载后按最新的全局开关再装一次
+                // （开关在公共配置文件里，不随账号配置走，这里保证改开关后重载配置即可生效）
+                installFeatureHooks();
                 // 自动切号：启动调度器，并在后台线程同步支付宝登录账号
                 // （反射调用支付宝服务不能在主线程做，否则会卡住宿主）
                 AccountSwitchController.configure(accountSwitchHost);
@@ -2181,14 +2188,83 @@ public class ApplicationHook extends XposedModule {
             return false;
         }
 
-        AlipayVersion maxSupported = new AlipayVersion("10.6.58.99999");
+        AlipayVersion maxSupported = new AlipayVersion(LEGACY_SLIDER_MAX_VERSION);
         if (alipayVersion.compareTo(maxSupported) > 0) {
             // 只有在不支持时才打印警告
-            Log.record("目标应用版本[" + alipayVersion.getVersionString() + "]高于[10.6.58.99999]不支持自动过滑块验证");
+            Log.record("目标应用版本[" + alipayVersion.getVersionString() + "]高于[" + LEGACY_SLIDER_MAX_VERSION + "]改用拼图/RDS 验证链路");
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * @return 支付宝版本低于等于 10.6.58.99999 时走旧版滑动手势；否则走拼图/RDS 验证链路
+     */
+    private boolean isLegacySliderVersion() {
+        if (alipayVersion == null || alipayVersion.toString().isEmpty()) {
+            return false;
+        }
+        return alipayVersion.compareTo(new AlipayVersion(LEGACY_SLIDER_MAX_VERSION)) <= 0;
+    }
+
+    /**
+     * 安装验证类与账号限制相关 Hook。
+     * <p>旧版本（≤10.6.58.99999）沿用项目原有的 SimplePageManager + MotionEvent 滑动手势；
+     * 新版本走拼图/RDS 验证链路，命中后阻断原流程并直接返回结果。
+     * <p>拼图链路的每个回调都会实时检查开关，所以这里始终安装，
+     * 避免用户在进程启动后才打开开关时必须重启支付宝才生效。
+     */
+    private void installFeatureHooks() {
+        try {
+            if (isLegacySliderVersion()) {
+                // 旧版本沿用项目原有的滑动手势，受「自动处理滑动/拼图验证」开关控制
+                if (FeatureFlagStore.isSlideCaptchaEnabled()) {
+                    initSimplePageManager();
+                }
+            } else {
+                // 新版拼图 Hook 的每个回调都会实时检查开关，这里始终安装，
+                // 避免开关在进程启动之后才打开时必须重启支付宝才生效
+                PuzzleCaptchaHook.install(classLoader);
+                // 部分验证以 XRiverActivity 页面形式弹出（H5 滑动/拼图），不经过 RDS Dialog Hook，
+                // 这里同时注册页面处理器作为补充
+                registerPageCaptchaHandler();
+            }
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#安装滑动/拼图验证 Hook", t);
+        }
+        try {
+            // 自动切号也需要保护本地登录账号记录，否则超过 5 个会被账号管理页清理
+            if (FeatureFlagStore.isAccountListProtected()) {
+                AccountLimitHook.install(classLoader);
+            }
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#安装账号限制 Hook", t);
+        }
+    }
+
+    /**
+     * 注册 XRiver 页面的验证码处理器：高版本先用拼图方案（截图+缺口识别+拖动）自动过验证，
+     * 处理期间先让路，避免“滑动到底”把拼图拖坏；拼图失败后自动回调本地滑动逻辑。
+     */
+    private void registerPageCaptchaHandler() {
+        try {
+            enableWindowMonitoring(classLoader);
+            final Captcha1Handler legacy = new Captcha1Handler();
+            addHandler("com.alipay.mobile.nebulax.xriver.activity.XRiverActivity",
+                    (activity, root) -> {
+                        if (!FeatureFlagStore.isSlideCaptchaEnabled()) {
+                            return false;
+                        }
+                        if (PuzzleCaptchaSolver.isHandling()) {
+                            Log.i(TAG, "XRiver 拼图自动验证进行中，暂缓本地滑动");
+                            return true;
+                        }
+                        return legacy.handleActivity(activity, root);
+                    });
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#注册页面验证处理器失败", t);
+        }
     }
 
     // ----------------------------------------------------------------

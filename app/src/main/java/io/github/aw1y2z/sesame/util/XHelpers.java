@@ -177,8 +177,32 @@ public class XHelpers {
         for (int i = 0; i < last; i++) {
             paramTypes[i] = (Class<?>) argsAndCallback[i];
         }
-        Method m = findMethodExact(clazz, name, paramTypes);
+        Method m = findMethodUpwards(clazz, name, paramTypes);
         return hookMember(m, callback);
+    }
+
+    /**
+     * 沿继承链向上查找方法（等价旧 Xposed 的 findAndHookMethod 语义）。
+     * <p>{@link #findMethodExact} 只看本类声明的方法，Hook 子类继承来的方法会找不到；
+     * 这里先在本类找，找不到再逐级上溯父类，最后再看接口。
+     */
+    public static Method findMethodUpwards(Class<?> clazz, String name, Class<?>... paramTypes) {
+        Class<?> current = clazz;
+        while (current != null) {
+            try {
+                return current.getDeclaredMethod(name, paramTypes);
+            } catch (NoSuchMethodException ignored) {
+                current = current.getSuperclass();
+            }
+        }
+        for (Class<?> iface : clazz.getInterfaces()) {
+            try {
+                return iface.getDeclaredMethod(name, paramTypes);
+            } catch (NoSuchMethodException ignored) {
+                // 继续尝试其它接口。
+            }
+        }
+        throw new RuntimeException("Method not found: " + clazz.getName() + "#" + name);
     }
 
     public static XC_MethodHook.Unhook findAndHookMethod(String className, ClassLoader cl, String name, Object... argsAndCallback) {
@@ -228,20 +252,23 @@ public class XHelpers {
                     if (param.hasResult) {
                         return param.result;
                     }
-                    Object result;
                     try {
-                        result = chain.proceed(param.args);
+                        param.result = chain.proceed(param.args);
+                        param.hasResult = true;
                     } catch (Throwable t) {
+                        // 与旧 Xposed 一致：原方法抛异常时仍要执行 afterHookedMethod，
+                        // 并把异常放进 param.getThrowable() 供 hook 判断（原样继续抛出）。
+                        param.exception = t;
+                        param.hasResult = true;
                         Log.e(TAG, "proceed error", t);
-                        throw t;
                     }
-                    param.result = result;
-                    param.hasResult = true;
                     try {
                         callback.callAfter(param);
                     } catch (Throwable t) {
                         Log.e(TAG, "afterHookedMethod error", t);
-                        return param.result;
+                    }
+                    if (param.exception != null) {
+                        throw param.exception;
                     }
                     return param.result;
                 });
@@ -277,7 +304,23 @@ public class XHelpers {
     }
 
     private static Method searchMethods(Class<?> clazz, String name, Class<?>[] argTypes, boolean staticOnly, boolean declaredOnly) {
-        Method[] methods = declaredOnly ? clazz.getDeclaredMethods() : clazz.getMethods();
+        if (declaredOnly) {
+            // 旧 Xposed 的 callMethod 会沿继承链查找（含 protected / 包私有方法），
+            // 这里同样上溯父类，否则宿主把方法放在父类时调用会找不到。
+            Class<?> current = clazz;
+            while (current != null) {
+                Method m = matchMethod(current.getDeclaredMethods(), name, argTypes, staticOnly);
+                if (m != null) {
+                    return m;
+                }
+                current = current.getSuperclass();
+            }
+            return null;
+        }
+        return matchMethod(clazz.getMethods(), name, argTypes, staticOnly);
+    }
+
+    private static Method matchMethod(Method[] methods, String name, Class<?>[] argTypes, boolean staticOnly) {
         for (Method m : methods) {
             if (!m.getName().equals(name)) {
                 continue;

@@ -71,6 +71,11 @@
 # 切号要按名字反射调用支付宝的 AccountService/LoginService，失败时要能看出调用的是哪个类
 -keep class io.github.aw1y2z.sesame.hook.AlipayAccountSwitchBridge { *; }
 -keep class io.github.aw1y2z.sesame.hook.AccountSwitchController { *; }
+# 突破账号限制：按字段名（m/l/u/t 等混淆名）反射读写宿主账号管理页的列表字段
+-keep class io.github.aw1y2z.sesame.hook.AccountLimitHook { *; }
+# 拼图/新版滑块验证：整条链路都靠反射与类名查找宿主方法，需保留全部成员
+-keep class io.github.aw1y2z.sesame.hook.PuzzleCaptcha* { *; }
+-keep class io.github.aw1y2z.sesame.util.FeatureFlagStore { *; }
 
 # ---------- 6. Jackson TypeReference 匿名子类：泛型实参只存在于子类签名里，
 #            被收缩后即抛 TypeReference constructed without actual type information ----------
