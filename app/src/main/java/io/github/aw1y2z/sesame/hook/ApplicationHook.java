@@ -258,8 +258,8 @@ public class ApplicationHook extends XposedModule {
                     AccountSwitchController.onAccountRunStarted(uid);
                     // pause() 刚停掉主任务时，它的执行槽可能还没被上一代线程归还：
                     // 此时 startTask 会因抢不到槽而放弃，本轮就白跑（下次要等一整个执行间隔）。
-                    // 这里重试几次，等上一代线程退出后再起跑。
-                    startMainTaskWithRetry(MAIN_TASK_SLOT_RETRY_TIMES, MAIN_TASK_SLOT_RETRY_INTERVAL);
+                    // startMainTask 内部会重试，等上一代线程退出后再起跑。
+                    startMainTask();
                 }
             };
 
@@ -1205,15 +1205,7 @@ public class ApplicationHook extends XposedModule {
 
     /** 起跳的公共实现：线程起不来等异常不能逃到宿主主线程（执行槽已由 BaseTask 归还） */
     private static void startMainTask() {
-        try {
-            if (Boolean.TRUE.equals(mainTask.startTask(false)) || tickScheduled) {
-                return;
-            }
-            // 没跑起来（check 不通过等）又无人排期：兜底续排，否则链断
-            execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
-        } catch (Throwable t) {
-            Log.printStackTrace(t);
-        }
+        startMainTaskWithRetry(MAIN_TASK_SLOT_RETRY_TIMES, MAIN_TASK_SLOT_RETRY_INTERVAL);
     }
 
     /** 主任务执行槽未就绪时的重试次数与间隔（切号后上一代线程退出需要一点时间） */
@@ -1224,13 +1216,9 @@ public class ApplicationHook extends XposedModule {
      * 起跳并在执行槽被占用时重试。
      * <p>{@code BaseTask.startTask} 抢不到槽就放弃本轮；切号暂停任务后立刻恢复时，
      * 上一代线程可能还没退出，这一轮就白跑了（要等一整个执行间隔才会再来）。
+     * <p>重试用尽后走常规兜底续排，保证任务链不断。
      */
     private static void startMainTaskWithRetry(int remainTimes, long intervalMillis) {
-        if (remainTimes <= 0) {
-            // 重试用尽：交给常规起跳兜底续排，别让任务链断掉
-            startMainTask();
-            return;
-        }
         try {
             if (Boolean.TRUE.equals(mainTask.startTask(false)) || tickScheduled) {
                 return;
@@ -1238,12 +1226,17 @@ public class ApplicationHook extends XposedModule {
         } catch (Throwable t) {
             Log.printStackTrace(t);
         }
-        final int next = remainTimes - 1;
-        Handler handler = mainHandler;
-        if (handler == null) {
-            startMainTask();
+        if (remainTimes <= 0) {
+            // 重试用尽：按常规间隔续排，别让任务链断掉
+            execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
             return;
         }
+        Handler handler = mainHandler;
+        if (handler == null) {
+            execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
+            return;
+        }
+        final int next = remainTimes - 1;
         handler.postDelayed(() -> startMainTaskWithRetry(next, intervalMillis), intervalMillis);
     }
 
