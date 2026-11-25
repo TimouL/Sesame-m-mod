@@ -311,6 +311,33 @@ public abstract class ModelTask extends Model {
         }
     }
 
+    /**
+     * 本轮任务是否已全部结束（不含未来到点的定时子任务）。
+     * <p>自动切号用它判断"当前账号跑完了没有"：模型线程都退出、且没有仍在等待触发的子任务，才允许切号。
+     */
+    public static boolean isAllTaskFinished() {
+        if (!MAIN_TASK_MAP.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        for (Model model : getModelArray()) {
+            if (model == null || ModelType.TASK != model.getType()) {
+                continue;
+            }
+            ModelTask task = (ModelTask) model;
+            for (ChildModelTask childTask : task.childTaskMap.values()) {
+                if (childTask == null || Boolean.TRUE.equals(childTask.getIsCancel())) {
+                    continue;
+                }
+                Long execTime = childTask.getExecTime();
+                if (execTime == null || execTime <= 0 || execTime <= now) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
     private ChildTaskExecutor newTimedTaskExecutor() {
         ChildTaskExecutor childTaskExecutor;
         Integer timedTaskModel = BaseModel.getTimedTaskModel().getValue();

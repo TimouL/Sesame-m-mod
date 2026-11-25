@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.aw1y2z.sesame.util.compat.XC_MethodReplacement;
 import io.github.aw1y2z.sesame.BuildConfig;
+import io.github.aw1y2z.sesame.data.AccountSwitchConfig;
 import io.github.aw1y2z.sesame.data.ConfigV2;
 import io.github.aw1y2z.sesame.data.Model;
 import io.github.aw1y2z.sesame.data.ModelGroup;
@@ -197,6 +198,70 @@ public class ApplicationHook extends XposedModule {
     private static Handler mainHandler;
 
     private static BaseTask mainTask;
+
+    /** 自动切号调度器与宿主交互入口 */
+    private final AccountSwitchController.Host accountSwitchHost =
+            new AccountSwitchController.Host() {
+                @Override
+                public String currentUid() {
+                    return getUserId();
+                }
+
+                @Override
+                public boolean isReadyForSwitch() {
+                    return init && !offline && service != null && getUserId() != null;
+                }
+
+                @Override
+                public boolean initialize(String uid, boolean startMain) {
+                    String current = getUserId();
+                    if (!StringUtil.isEmpty(uid) && !uid.equals(current)) {
+                        // 实际登录账号还没切过来时不能初始化，否则会把上一个账号的配置加载进内存
+                        Log.record("自动切号🔄️ 已登录账号与目标不一致，跳过配置加载: 目标["
+                                + uid + "] 实际[" + current + "]");
+                        return false;
+                    }
+                    Boolean result = initHandler(true, startMain);
+                    return Boolean.TRUE.equals(result);
+                }
+
+                @Override
+                public void pause() {
+                    try {
+                        if (mainTask != null) {
+                            mainTask.stopTask();
+                        }
+                    } catch (Throwable t) {
+                        Log.printStackTrace(TAG + "#暂停主任务失败", t);
+                    }
+                    ModelTask.stopAllTask();
+                    // 任务停止后把当前账号的内存配置落盘，保证切完号后 UI 从磁盘读到的是最新配置
+                    try {
+                        ConfigV2.save(UserIdMap.getCurrentUid(), false);
+                    } catch (Throwable t) {
+                        Log.printStackTrace(TAG + "#切号前保存配置失败", t);
+                    }
+                }
+
+                @Override
+                public void resume() {
+                    offline = false;
+                    String uid = getUserId();
+                    // 失败恢复：登录账号与内存配置不一致（切号已生效但初始化失败/登录态抖动）时，
+                    // 按实际登录的账号重新加载配置，避免用上一个账号的配置继续跑任务
+                    if (!StringUtil.isEmpty(uid) && !uid.equals(UserIdMap.getCurrentUid())) {
+                        Log.record("自动切号🔄️ 恢复运行：登录账号与内存配置不一致，重新加载配置");
+                        if (Boolean.TRUE.equals(initHandler(true, true))) {
+                            return;
+                        }
+                    }
+                    AccountSwitchController.onAccountRunStarted(uid);
+                    // pause() 刚停掉主任务时，它的执行槽可能还没被上一代线程归还：
+                    // 此时 startTask 会因抢不到槽而放弃，本轮就白跑（下次要等一整个执行间隔）。
+                    // 这里重试几次，等上一代线程退出后再起跑。
+                    startMainTaskWithRetry(MAIN_TASK_SLOT_RETRY_TIMES, MAIN_TASK_SLOT_RETRY_INTERVAL);
+                }
+            };
 
     private static RpcBridge rpcBridge;
 
@@ -517,6 +582,11 @@ public class ApplicationHook extends XposedModule {
                                     if (!init) {
                                         return;
                                     }
+                                    // 自动切号：切号中/轮次等待中不再启动新一轮任务
+                                    if (AccountSwitchController.isPaused()) {
+                                        Log.record("自动切号中，暂停任务执行");
+                                        return;
+                                    }
                                     Log.record("应用版本：" + alipayVersion.getVersionString());
                                     Log.record("模块版本：" + modelVersion);
                                     Log.record("开始执行");
@@ -569,6 +639,7 @@ public class ApplicationHook extends XposedModule {
                                     }
                                     TaskCommon.update();
                                     ModelTask.startAllTask(false);
+                                    AccountSwitchController.onTasksStarted();
                                     lastExecTime = System.currentTimeMillis();
 
                                     try {
@@ -918,6 +989,10 @@ public class ApplicationHook extends XposedModule {
                 UserIdMap.initUser(userId);
                 Model.initAllModel();
                 ConfigV2.load(userId);
+                // 自动切号：启动调度器，并在后台线程同步支付宝登录账号
+                // （反射调用支付宝服务不能在主线程做，否则会卡住宿主）
+                AccountSwitchController.configure(accountSwitchHost);
+                AccountSwitchController.requestAccountSync();
 
                 boolean enableModule = Model.getModel(BaseModel.class).getEnableField().getValue();
                 if (!enableModule) {
@@ -959,11 +1034,16 @@ public class ApplicationHook extends XposedModule {
                 updateDay();
                 BaseModel.initData();
                 BaseModel.initRpcRequest();
+                Log.record("自动切换登录账号：" + (AccountSwitchConfig.isAccountSwitchEnabled() ? "已开启" : "已关闭")
+                        + "，切号间隔：" + AccountSwitchConfig.getAccountSwitchIntervalMinutes() + " 分钟"
+                        + "，轮次间隔：" + AccountSwitchConfig.getAccountSwitchRoundIntervalMinutes() + " 分钟"
+                        + "，账号数：" + AccountSwitchConfig.getAccountSwitchAccounts().size());
                 Toast.show("芝麻粒加载成功");
                 init = true;
             }
             offline = false;
             if (exec) {
+                AccountSwitchController.onAccountRunStarted(getUserId());
                 execHandler();
             } else {
                 // 只重载、不执行：但仍要排上下一跳——destroyHandler 已把旧排期清掉，
@@ -1134,6 +1214,37 @@ public class ApplicationHook extends XposedModule {
         } catch (Throwable t) {
             Log.printStackTrace(t);
         }
+    }
+
+    /** 主任务执行槽未就绪时的重试次数与间隔（切号后上一代线程退出需要一点时间） */
+    private static final int MAIN_TASK_SLOT_RETRY_TIMES = 6;
+    private static final long MAIN_TASK_SLOT_RETRY_INTERVAL = 500L;
+
+    /**
+     * 起跳并在执行槽被占用时重试。
+     * <p>{@code BaseTask.startTask} 抢不到槽就放弃本轮；切号暂停任务后立刻恢复时，
+     * 上一代线程可能还没退出，这一轮就白跑了（要等一整个执行间隔才会再来）。
+     */
+    private static void startMainTaskWithRetry(int remainTimes, long intervalMillis) {
+        if (remainTimes <= 0) {
+            // 重试用尽：交给常规起跳兜底续排，别让任务链断掉
+            startMainTask();
+            return;
+        }
+        try {
+            if (Boolean.TRUE.equals(mainTask.startTask(false)) || tickScheduled) {
+                return;
+            }
+        } catch (Throwable t) {
+            Log.printStackTrace(t);
+        }
+        final int next = remainTimes - 1;
+        Handler handler = mainHandler;
+        if (handler == null) {
+            startMainTask();
+            return;
+        }
+        handler.postDelayed(() -> startMainTaskWithRetry(next, intervalMillis), intervalMillis);
     }
 
     /** 是否已有待发的下一跳：单链之下既用它兜底续排，又不覆盖本轮更早的显式排期（定时执行、reLogin 快重试） */

@@ -55,6 +55,23 @@
     public boolean is*();
 }
 
+# ---------- 5.1 自动切号：公共配置读写与宿主反射调用 ----------
+# AccountSwitchConfig 用 org.json 手写序列化，不受 Jackson 影响；但 ConfigV2 通过
+# instanceof GlobalConfigField 判定全局字段，接口方法名变了会与实现对不上。
+-keep interface io.github.aw1y2z.sesame.data.GlobalConfigField {
+    public void applyGlobalValue(java.lang.Object);
+}
+-keep class io.github.aw1y2z.sesame.data.AccountSwitchConfig {
+    <init>(...);
+    <fields>;
+    public *** get*();
+    public void set*(***);
+    public boolean is*();
+}
+# 切号要按名字反射调用支付宝的 AccountService/LoginService，失败时要能看出调用的是哪个类
+-keep class io.github.aw1y2z.sesame.hook.AlipayAccountSwitchBridge { *; }
+-keep class io.github.aw1y2z.sesame.hook.AccountSwitchController { *; }
+
 # ---------- 6. Jackson TypeReference 匿名子类：泛型实参只存在于子类签名里，
 #            被收缩后即抛 TypeReference constructed without actual type information ----------
 -keep class io.github.aw1y2z.sesame.** extends com.fasterxml.jackson.core.type.TypeReference

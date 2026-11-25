@@ -57,6 +57,10 @@ public class ConfigV2 {
             ModelFields modelFields = newModels.get(modelCode);
             if (modelFields != null) {
                 for (ModelField<?> configModelField : configModelFields.values()) {
+                    // 全局字段（切号等）存在公共配置文件里，不进账号配置，也不从账号配置回填
+                    if (configModelField instanceof GlobalConfigField) {
+                        continue;
+                    }
                     ModelField<?> modelField = modelFields.get(configModelField.getCode());
                     try {
                         if (modelField != null) {
@@ -72,6 +76,9 @@ public class ConfigV2 {
                 }
             } else {
                 for (ModelField<?> configModelField : configModelFields.values()) {
+                    if (configModelField instanceof GlobalConfigField) {
+                        continue;
+                    }
                     newModelFields.addField(configModelField);
                 }
             }

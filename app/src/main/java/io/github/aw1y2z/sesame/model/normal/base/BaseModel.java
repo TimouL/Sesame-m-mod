@@ -19,6 +19,11 @@ import lombok.Getter;
 import io.github.aw1y2z.sesame.data.Model;
 import io.github.aw1y2z.sesame.data.ModelFields;
 import io.github.aw1y2z.sesame.data.ModelGroup;
+import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchBooleanModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchFinalAccountModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchIntervalModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchListModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchTimesModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.BooleanModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.ChoiceModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.IntegerModelField;
@@ -26,6 +31,8 @@ import io.github.aw1y2z.sesame.data.modelFieldExt.ListModelField;
 import io.github.aw1y2z.sesame.model.task.protectEcology.ProtectEcology;
 import io.github.aw1y2z.sesame.util.*;
 import io.github.aw1y2z.sesame.util.idMap.*;
+
+import java.util.ArrayList;
 
 /**
  * 基础配置模块
@@ -53,6 +60,35 @@ public class BaseModel extends Model {
     private static final SelectAndCountModelField rpcRequestList = new SelectAndCountModelField("rpcRequestList", "RPC请求列表及每日执行数(慎用)", new LinkedHashMap<>(), AlipayrpcRequest::getList, "请填写每日执行次数", 1, 100);
     @Getter
     private static final SelectModelField rpcRequestTaskList= new SelectModelField("rpcRequestTaskList", "RPC可选任务列表(长按列表中的项仅移除用，内容需打开rpcResquest.json文件配置)", new LinkedHashSet<>(), AlipayrpcRequest::getList,"长按删除RPC列表项用");
+    // ===== 自动切换登录账号（全局配置，值存在 config/config_common.json，不随账号走）=====
+    @Getter
+    private static final AccountSwitchBooleanModelField accountSwitchEnabled =
+            new AccountSwitchBooleanModelField("accountSwitchEnabled", "自动切换登录账号", false)
+                    .setDescription("开启后按下面的顺序循环切换支付宝登录账号；账号列表在模块启动时自动读取");
+    @Getter
+    private static final AccountSwitchIntervalModelField accountSwitchIntervalMinutes =
+            new AccountSwitchIntervalModelField("accountSwitchIntervalMinutes",
+                    "切号等待间隔(分钟,0任务完成立即切)", 0, 0, 24 * 60,
+                    AccountSwitchIntervalModelField.KIND_SWITCH)
+                    .setDescription("当前账号的任务全部跑完后，再等这么久才切到下一个账号");
+    @Getter
+    private static final AccountSwitchIntervalModelField accountSwitchRoundIntervalMinutes =
+            new AccountSwitchIntervalModelField("accountSwitchRoundIntervalMinutes",
+                    "切号轮次间隔(分钟,0不等待)", 0, 0, 24 * 60,
+                    AccountSwitchIntervalModelField.KIND_ROUND)
+                    .setDescription("所有账号轮完一圈后，等待这么久才开始下一轮");
+    @Getter
+    private static final AccountSwitchListModelField accountSwitchAccounts =
+            new AccountSwitchListModelField("accountSwitchAccounts", "账号切换顺序列表", new ArrayList<>())
+                    .setDescription("点击进入可上下移动调整切号顺序");
+    @Getter
+    private static final AccountSwitchFinalAccountModelField accountSwitchFinalAccountUid =
+            new AccountSwitchFinalAccountModelField("accountSwitchFinalAccountUid", "常态保持账号(轮完切入)")
+                    .setDescription("一轮账号轮完后切到该账号，等待「切号轮次间隔」再开始下一轮；不选则回到列表第一个账号");
+    @Getter
+    private static final AccountSwitchTimesModelField accountSwitchScheduleTimes =
+            new AccountSwitchTimesModelField("accountSwitchScheduleTimes", "切换账号定时执行(如0800,2000)", new ArrayList<>())
+                    .setDescription("到点后立即终止当前账号任务，20 秒后切到常态保持账号执行一轮；支持 HH、HHmm、HHmmss，逗号分隔");
     
     @Override
     public String getName() {
@@ -93,6 +129,13 @@ public class BaseModel extends Model {
         modelFields.addField(backupConfigDays);
         modelFields.addField(rpcRequestList);
         modelFields.addField(rpcRequestTaskList);
+        // 自动切换登录账号：全部是全局配置，值存在公共配置文件里
+        modelFields.addField(accountSwitchEnabled);
+        modelFields.addField(accountSwitchIntervalMinutes);
+        modelFields.addField(accountSwitchRoundIntervalMinutes);
+        modelFields.addField(accountSwitchAccounts);
+        modelFields.addField(accountSwitchFinalAccountUid);
+        modelFields.addField(accountSwitchScheduleTimes);
         return modelFields;
     }
     

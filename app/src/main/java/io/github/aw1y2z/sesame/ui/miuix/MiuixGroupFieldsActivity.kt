@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.aw1y2z.sesame.data.ConfigPreload
 import io.github.aw1y2z.sesame.data.ConfigV2
+import io.github.aw1y2z.sesame.data.AccountSwitchConfig
 import io.github.aw1y2z.sesame.data.Model
 import io.github.aw1y2z.sesame.data.ModelConfig
 import io.github.aw1y2z.sesame.data.ModelField
@@ -122,6 +123,11 @@ class MiuixGroupFieldsActivity : MiuixBaseActivity() {
      */
     fun save() {
         val changed = ConfigV2.hasFieldChanges()
+        // 全局字段（切号等）即时写进了公共配置文件，不走这条账号配置的落盘路径
+        if (globalChanged) {
+            globalChanged = false
+            ToastUtil.show(this, "全局配置已保存")
+        }
         if (userId == null) {
             if (changed) {
                 ToastUtil.show(this, "未获取到账号，改动未保存")
@@ -136,6 +142,12 @@ class MiuixGroupFieldsActivity : MiuixBaseActivity() {
             ToastUtil.show(this, "保存失败，改动未落盘")
         }
     }
+
+    /** 本页是否改过全局字段（值已即时写进公共配置文件） */
+    internal var globalChanged = false
+        set(value) {
+            field = value
+        }
 
     private fun sendRestartIfNeeded() {
         if (!StringUtil.isEmpty(userId)) {
@@ -336,6 +348,17 @@ internal fun fieldMatchesSearch(query: String, field: ModelField<*>): Boolean {
         || field.description?.contains(query, ignoreCase = true) == true
 }
 
+/** 账号顺序行的摘要：显示账号个数与前两个账号名 */
+private fun accountOrderSummary(): String {
+    val accounts = AccountSwitchConfig.getAccountSwitchAccounts()
+    if (accounts.isEmpty()) {
+        return "暂无账号"
+    }
+    val names = accounts.take(2).map { it.displayName }
+    val head = names.joinToString("、")
+    return if (accounts.size > 2) "$head 等 ${accounts.size} 个账号" else head
+}
+
 /** 单个字段行：圆角只在一组首尾外露，视觉上仍是一张连续卡片，但每行可被独立复用/回收 */
 @Composable
 private fun GroupFieldRow(
@@ -352,6 +375,16 @@ private fun GroupFieldRow(
     ) {
         val field = row.field
         when (field.type) {
+            "ACCOUNT_LIST" -> {
+                // 账号顺序有专门的编辑页（上下移动 + 保存），不在通用字段渲染里处理
+                ArrowPreference(
+                    title = field.name ?: "",
+                    summary = accountOrderSummary(),
+                    onClick = {
+                        activity.startActivity(Intent(activity, MiuixAccountOrderActivity::class.java))
+                    }
+                )
+            }
             "SELECT", "SELECT_ONE", "SELECT_AND_COUNT", "SELECT_AND_COUNT_ONE" -> {
                 ArrowPreference(
                     title = field.name ?: "",
@@ -370,7 +403,11 @@ private fun GroupFieldRow(
             }
             else -> {
                 // 只写内存，落盘统一在 saveAndFinish() / onBackPressed() 完成
-                FieldItem(field = field, onFieldChanged = onDependencyChanged)
+                FieldItem(
+                    field = field,
+                    onFieldChanged = onDependencyChanged,
+                    onGlobalChanged = { activity.globalChanged = true }
+                )
             }
         }
     }
