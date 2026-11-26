@@ -109,8 +109,15 @@ public final class PuzzleCaptchaHook {
     private static volatile String sVerifyTips;
     private static volatile boolean sTipsLoaded;
     /** 页面路径的“请手动完成”提示节流，避免被动扫描反复失败时刷屏。 */
-    private static long sLastPageManualAt;
+    private static volatile long sLastPageManualAt;
     private static final long PAGE_MANUAL_REPORT_INTERVAL_MS = 60_000L;
+    /**
+     * 页面级拼图扫描的冷却时间。
+     * <p>兜底滑动一旦触发，扫描循环就结束了；用户下一次回到该页面又会重新 arm，
+     * 于是兜底滑动会被反复触发（每次都带 500ms 以上的 sleep），既拖慢又显得异常。
+     */
+    private static volatile long sLastPageArmAt;
+    private static final long PAGE_ARM_COOLDOWN_MS = 30_000L;
 
     private static boolean installed;
     private static ClassLoader sClassLoader;
@@ -310,18 +317,52 @@ public final class PuzzleCaptchaHook {
         return false;
     }
 
-    /** 拼图手势方案：验证内容确实在 WebView 里才接管，失败回调里提示手动完成。 */
+    /**
+     * 拼图手势方案：验证内容确实在 WebView 里才接管，失败回调里提示手动完成。
+     * <p>{@code Dialog.show()} 返回时视图往往还没 inflate 完，此时直接判定"没有 WebView"
+     * 会误报"无自动验证能力"，拼图方案根本没启动。所以这里改成轮询等视图就绪。
+     */
     private static boolean armPuzzle(Object dialog, View view, String tips) {
-        if (dialog instanceof Dialog && view != null && PuzzleCaptchaSolver.containsWebView(view)) {
-            final Dialog d = (Dialog) dialog;
+        if (!(dialog instanceof Dialog) || view == null) {
+            return false;
+        }
+        final Dialog d = (Dialog) dialog;
+        if (PuzzleCaptchaSolver.containsWebView(view)) {
             return PuzzleCaptchaSolver.arm("验证弹窗", d,
                     () -> reportManualNeeded(d, tips), 15);
         }
+        /*
+         * 视图还没 inflate 完（show() 返回时常见）时不能断定"这不是拼图"：
+         * 那样拼图方案根本没启动。这里挂一个延后重试，视图就绪后再接管；
+         * 返回值仍为 false，调用方原有的兜底提示逻辑照常走（提示有去重，不会刷屏）。
+         */
+        scheduleArmPuzzleWhenReady(d, view, tips, 10);
         return false;
     }
 
+    /** 轮询等待弹窗里出现 WebView；超时仍没有则提示手动完成。 */
+    private static void scheduleArmPuzzleWhenReady(final Dialog dialog, final View view,
+                                                    final String tips, final int remain) {
+        MAIN_HANDLER.postDelayed(() -> {
+            if (!dialog.isShowing()) {
+                return;
+            }
+            if (PuzzleCaptchaSolver.containsWebView(view)) {
+                PuzzleCaptchaSolver.arm("验证弹窗", dialog,
+                        () -> reportManualNeeded(dialog, tips), 15);
+                return;
+            }
+            if (remain > 1) {
+                scheduleArmPuzzleWhenReady(dialog, view, tips, remain - 1);
+                return;
+            }
+            reportManualNeeded(dialog, tips);
+        }, 300L);
+    }
+
     /**
-     * 诊断用：记录每次前台 Activity 的类名；XRiver（Nebula/H5）页面出现时启动拼图自动验证。
+     * 诊断用：记录前台 Activity 的类名；XRiver（Nebula/H5）页面出现时启动拼图自动验证。
+     * <p>只有命中 XRiver/Nebula/H5 的 Activity 才记日志：每个 Activity 都记会随切页刷屏。
      */
     private static void hookActivityDiagnostics() {
         try {
@@ -333,10 +374,10 @@ public final class PuzzleCaptchaHook {
                     }
                     Object activity = param.thisObject;
                     String name = activity.getClass().getName();
-                    Log.i(TAG, "Activity 显示: " + name);
                     String lower = name.toLowerCase(Locale.ROOT);
                     if ((lower.contains("xriver") || lower.contains("nebula") || lower.contains("h5activity"))
                             && activity instanceof Activity) {
+                        Log.i(TAG, "Activity 显示: " + name);
                         armPuzzleForPage((Activity) activity);
                     }
                 }
@@ -361,6 +402,13 @@ public final class PuzzleCaptchaHook {
         if (decor == null) {
             return;
         }
+        // 冷却：兜底滑动触发后扫描循环就结束了，用户切回该页面会再次 arm，
+        // 不加冷却的话兜底滑动会被反复触发（每次都带几百毫秒 sleep）。
+        long now = SystemClock.uptimeMillis();
+        if (now - sLastPageArmAt < PAGE_ARM_COOLDOWN_MS) {
+            return;
+        }
+        sLastPageArmAt = now;
         Runnable legacy = () -> new Thread(() -> {
             try {
                 boolean handled = new Captcha1Handler()
@@ -479,6 +527,23 @@ public final class PuzzleCaptchaHook {
             // show() 被子类重写且不回调 super 时不会触发；onStart 由所有弹窗显示时统一调用。
             XHelpers.findAndHookMethod(Dialog.class, "show", hook);
             XHelpers.findAndHookMethod(Dialog.class, "onStart", hook);
+            // 弹窗关闭时清掉它的去重/计数状态：同一个 Dialog 实例再次显示是新的验证场景，
+            // 不清的话会被"已处理过"跳过，或沿用上次的尝试次数。
+            XHelpers.findAndHookMethod(Dialog.class, "dismiss", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    Object dialog = param.thisObject;
+                    if (dialog == null) {
+                        return;
+                    }
+                    sShowHandled.remove(dialog);
+                    sDirectSubmitScheduled.remove(dialog);
+                    sDirectSubmitAttempts.remove(dialog);
+                    sLastDirectSubmitAt.remove(dialog);
+                    sSuccessReported.remove(dialog);
+                    sManualNeededReported.remove(dialog);
+                }
+            });
             Log.i(TAG, "兜底 Dialog.show/onStart Hook 已挂载");
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#挂载兜底 Dialog Hook 失败", t);
@@ -1187,15 +1252,11 @@ public final class PuzzleCaptchaHook {
                 if (callback == null) {
                     setObjectField(view, "l", Boolean.TRUE);
                     invokeIfExists(view, "__onDetachedFromWindow_stub_private");
-                } else {
-                    try {
-                        callback.onResult(true);
-                        invokeIfExists(utilRef, "w");
-                        invokeIfExists(utilRef, "o");
-                    } catch (Throwable t) {
-                        callback.onResult(false);
-                    }
+                    return;
                 }
+                callback.onResult(true);
+                invokeIfExists(utilRef, "w");
+                invokeIfExists(utilRef, "o");
             }, 2500L);
             return true;
         } catch (Throwable t) {
@@ -1820,12 +1881,34 @@ public final class PuzzleCaptchaHook {
             return true;
         }
         // 学习值未命中时继续按“包含验证”判断，兼容文案变更并触发重新学习。
-        return tips.contains(TIP_VERIFY) || tips.contains("验证");
+        if (!tips.contains(TIP_VERIFY) && !tips.contains("验证")) {
+            return false;
+        }
+        // 但“验证成功/验证通过/已完成验证”是**结果**提示，不是要求验证的提示，
+        // 按“包含验证”判会被误当成验证码弹窗，白白走一遍自动验证。
+        for (String done : VERIFY_DONE_WORDS) {
+            if (tips.contains(done)) {
+                return false;
+            }
+        }
+        return true;
     }
+
+    /** 表示验证已完成的措辞：出现这些词说明是结果提示，不是“请完成验证” */
+    private static final String[] VERIFY_DONE_WORDS = {
+            "验证成功", "验证通过", "已完成验证", "验证已完成", "验证失败"
+    };
 
     private static void learnVerifyTips(String tips) {
         if (tips == null || tips.isEmpty() || !tips.contains("验证")) {
             return;
+        }
+        // 结果类措辞（验证成功/失败）不能当"请进行验证"的文案记下来，
+        // 否则以后所有提示都会被判成验证码弹窗。
+        for (String done : VERIFY_DONE_WORDS) {
+            if (tips.contains(done)) {
+                return;
+            }
         }
         if (tips.equals(getLearnedVerifyTips())) {
             return;
@@ -1884,7 +1967,9 @@ public final class PuzzleCaptchaHook {
 
                     @Override
                     public void onActivityResumed(Activity activity) {
-                        sResumedActivity = new WeakReference<>(activity);
+                        synchronized (PuzzleCaptchaHook.class) {
+                            sResumedActivity = new WeakReference<>(activity);
+                        }
                     }
 
                     @Override
@@ -1909,8 +1994,13 @@ public final class PuzzleCaptchaHook {
     }
 
     private static void clearIfCurrent(Activity activity) {
-        if (sResumedActivity.get() == activity) {
-            sResumedActivity.clear();
+        // 判定与清理要原子：两次调用之间可能刚好 resume 了新 Activity，
+        // 这时把新引用清掉会让 hasForegroundActivity() 误判为"没有前台"。
+        synchronized (PuzzleCaptchaHook.class) {
+            WeakReference<Activity> ref = sResumedActivity;
+            if (ref != null && ref.get() == activity) {
+                ref.clear();
+            }
         }
     }
 

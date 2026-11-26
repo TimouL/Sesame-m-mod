@@ -604,13 +604,19 @@ public class ApplicationHook extends XposedModule {
                                     String currentUid = UserIdMap.getCurrentUid();
                                     if (targetUid == null || currentUid == null) {
                                         Log.record("用户为空，放弃执行");
-                                        reLogin();
+                                        // 切号过程中登录态正在变动，读不到属正常，等切号流程接管
+                                        if (!AccountSwitchController.isPaused()) {
+                                            reLogin();
+                                        }
                                         return;
                                     }
                                     if (!targetUid.equals(currentUid)) {
                                         Log.record("开始切换用户");
-                                        Toast.show("开始切换用户");
-                                        reLogin();
+                                        // 切号过程中两个 uid 本来就会短暂不一致，别去拉登录页打断切号
+                                        if (!AccountSwitchController.isPaused()) {
+                                            Toast.show("开始切换用户");
+                                            reLogin();
+                                        }
                                         return;
                                     }
                                     // 本轮 check 的起点单独留一份：waitTime 只依赖它，不再依赖会被后续重写的 lastExecTime
@@ -632,6 +638,13 @@ public class ApplicationHook extends XposedModule {
                                         reLoginCount.set(0);
                                     } catch (InterruptedException | ExecutionException |
                                              TimeoutException e) {
+                                        // 切号/重载会中断本线程（stopTask 里 old.interrupt()），
+                                        // 这属于正常收尾，不能当成"检查失败"去拉起登录页：
+                                        // 登录页会打断切号流程，表现为切号频繁失败。
+                                        if (AccountSwitchController.isPaused()) {
+                                            Log.record("自动切号中，结束本轮检查");
+                                            return;
+                                        }
                                         Log.record("执行失败：检查中断");
                                         reLogin();
                                         return;
@@ -978,6 +991,12 @@ public class ApplicationHook extends XposedModule {
      */
     private synchronized Boolean runInit(Boolean force, boolean exec) {
         destroyHandler(force);
+        // destroyHandler 只是通知旧模型线程作废，它们要到下一个检查点才真正退出。
+        // 这里等它们退完再建新模型，否则新旧两代任务会同时跑 ——
+        // 切号时就是「上一个账号的收尾动作」与「新账号的任务」重叠。
+        if (!ModelTask.waitForAllTaskStopped(TASK_STOP_WAIT_MILLIS)) {
+            Log.record("旧任务未在 " + (TASK_STOP_WAIT_MILLIS / 1000) + " 秒内退出，继续重载");
+        }
         try {
             if (force) {
                 String userId = getUserId();
@@ -1209,6 +1228,9 @@ public class ApplicationHook extends XposedModule {
 
     /** 单轮 check 的超时窗口：既是 FutureTask.get 的上限，也是失败后补齐到整轮网格的基准 */
     private static final long CHECK_TIMEOUT_MS = 10_000;
+
+    /** 重载/切号时等待旧任务线程真正退出的超时 */
+    private static final long TASK_STOP_WAIT_MILLIS = 30_000L;
 
     /** 起跳的公共实现：线程起不来等异常不能逃到宿主主线程（执行槽已由 BaseTask 归还） */
     private static void startMainTask() {

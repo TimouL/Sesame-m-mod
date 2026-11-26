@@ -40,6 +40,10 @@ public abstract class XC_MethodHook {
         public void setResult(Object result) {
             this.result = result;
             this.hasResult = true;
+            // 与旧 Xposed 一致：setResult 会清掉异常。
+            // 原方法抛异常后 hook 在 after 里用 setResult 补救（吞掉异常并给出返回值），
+            // 若不清异常，异常仍会被原样抛出，补救就白做了。
+            this.exception = null;
         }
 
         public boolean hasThrowable() {

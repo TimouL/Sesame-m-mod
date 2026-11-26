@@ -84,6 +84,12 @@ public final class PuzzleCaptchaSolver {
     private static final Map<View, Integer> CAPTURES = new WeakHashMap<>();
     /** 同一窗口的 no-track 截图存档节流，避免被动扫描 30 秒里把普通页面反复写进 puzzle.zip。 */
     private static final Map<View, Long> NO_TRACK_SAVED = new WeakHashMap<>();
+    /**
+     * 同一窗口的 no-slider 截图存档节流。
+     * <p>识别不到滑块的截图一律存盘，一 PNG 压缩要 1~2 秒，而分析与存盘共用同一个工作线程，
+     * 主动扫描 60 秒窗口期里能存满 60 张，把识别彻底堵死。
+     */
+    private static final Map<View, Long> NO_SLIDER_SAVED = new WeakHashMap<>();
     private static final Map<View, String> LAST_DIAG = new WeakHashMap<>();
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(runnable -> {
         Thread thread = new Thread(runnable, "SesamePuzzleSolver");
@@ -163,7 +169,14 @@ public final class PuzzleCaptchaSolver {
             PuzzleCaptchaSolver.maxPolls = window;
             polls = 0;
             noWebPolls = 0;
-            fallback = onFallback;
+            /*
+             * 兜底只在新的一轮真的带了兜底时才替换。
+             * 否则：H5 风险页调 arm(source)（不带兜底）会把被动扫描挂上的页面级兜底
+             * （Captcha1/2Handler 滑动到底）覆盖成 null，页面级兜底就此永久丢失。
+             */
+            if (onFallback != null) {
+                fallback = onFallback;
+            }
             fallbackFired = false;
             sawPuzzle = false;
             if (polling) {
@@ -215,7 +228,10 @@ public final class PuzzleCaptchaSolver {
             maxPolls = PASSIVE_POLLS;
             polls = 0;
             noWebPolls = 0;
-            fallback = onFallback;
+            // 同 arm()：不带兜底时保留已有的兜底，不把它清成 null
+            if (onFallback != null) {
+                fallback = onFallback;
+            }
             fallbackFired = false;
             sawPuzzle = false;
             Log.i(TAG, "被动扫描开始(" + source + ")，最长 " + PASSIVE_POLLS + " 秒");
@@ -506,9 +522,11 @@ public final class PuzzleCaptchaSolver {
         if (slider == null) {
             diag(root, "未识别到拼图滑块按钮（图片可能还在加载，或布局与参考设备不同）");
             // 没识别到滑块的图（图片还没加载、窗口是别的页面…）先都存着，方便看过程；验证结束后
-            // cleanupNoSlider() 统一删掉，只留包含验证码（识别到滑块）的截图
+            // cleanupNoSlider() 统一删掉，只留包含验证码（识别到滑块）的截图。
+            // 存盘要节流：一张全屏 PNG 压缩 1~2 秒，而分析与存盘共用同一个工作线程，
+            // 不节流的话主动扫描 60 秒窗口能把线程全占在写盘上，真正需要识别时反而排队。
             if (!quiet) {
-                saveSample(bitmap, "no-slider");
+                saveNoSliderThrottled(root, bitmap);
             }
             bitmap.recycle();
             MAIN.post(release);
@@ -599,6 +617,13 @@ public final class PuzzleCaptchaSolver {
                     // 验证成功会先显示“验证通过”几秒、窗口随后才关闭，固定 1.5 秒只判一次会把成功误判成失败，
                     // 进而多拖几次并记一条错误的失败。这里改成轮询等窗口真正关闭（最长 6 秒）。
                     awaitWindowClosed(web, downRejected ? 800L : 6000L, () -> {
+                        if (downRejected) {
+                            // 按下就被拒绝，这次拖动根本没生效：窗口关闭与本次尝试无关，
+                            // 不能记成"验证成功"，否则会清零尝试次数并误报成功。
+                            Log.i("按下未生效期间验证窗口关闭，视为本次未通过，稍后重试");
+                            retry(root);
+                            return;
+                        }
                         handling = false;
                         ATTEMPTS.remove(web); // 验证成功：尝试次数归零
                         Log.record("拼图验证✅成功（拖动后验证窗口已关闭）");
@@ -717,6 +742,10 @@ public final class PuzzleCaptchaSolver {
 
     /** 同一窗口 10 秒内只存一张 no-track，避免普通页面被误判后反复写盘。 */
     private static void saveNoTrackThrottled(View root, Bitmap bitmap) {
+        // 被动扫描（quiet）不写盘：被动期只是"盯着看"，写满 puzzle.zip 也没有诊断价值
+        if (quiet) {
+            return;
+        }
         long now = SystemClock.uptimeMillis();
         Long last = NO_TRACK_SAVED.get(root);
         if (last != null && now - last < 10_000L) {
@@ -724,6 +753,17 @@ public final class PuzzleCaptchaSolver {
         }
         NO_TRACK_SAVED.put(root, now);
         saveSample(bitmap, "no-track");
+    }
+
+    /** 同一窗口 10 秒内只存一张 no-slider，避免存盘把工作线程占死。 */
+    private static void saveNoSliderThrottled(View root, Bitmap bitmap) {
+        long now = SystemClock.uptimeMillis();
+        Long last = NO_SLIDER_SAVED.get(root);
+        if (last != null && now - last < 10_000L) {
+            return;
+        }
+        NO_SLIDER_SAVED.put(root, now);
+        saveSample(bitmap, "no-slider");
     }
 
     /**

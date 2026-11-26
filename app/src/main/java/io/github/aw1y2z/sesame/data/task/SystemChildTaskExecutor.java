@@ -54,14 +54,20 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
                         childTask.getModelTask().removeChildTask(childTask.getId());
                     }
                 });
-                childTask.setCancelTask(() -> future.cancel(true));
+                // 取消动作要「叠加」而不是「覆盖」：
+                // 延迟投递的 runnable 已经触发时，removeCallbacks 无效，
+                // 只有取消线程池里的 future 才真正停得住。
+                // 原写法第二次 setCancelTask 会把前一个覆盖掉，
+                // 于是「已投递到线程池、正在 sleep 等 execTime」的子任务
+                // 在切号后仍会醒来执行 —— 表现为上一个账号的定时任务跑到新账号上。
+                childTask.appendCancelTask(() -> future.cancel(true));
             };
             long delayMillis = execTime - System.currentTimeMillis();
             if (delayMillis > 3000) {
                 handler.postDelayed(runnable, delayMillis - 2500);
-                childTask.setCancelTask(() -> handler.removeCallbacks(runnable));
+                childTask.appendCancelTask(() -> handler.removeCallbacks(runnable));
             } else {
-                childTask.setCancelTask(() -> handler.removeCallbacks(runnable));
+                childTask.appendCancelTask(() -> handler.removeCallbacks(runnable));
                 handler.post(runnable);
             }
         } else {
@@ -74,7 +80,7 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
                     childTask.getModelTask().removeChildTask(childTask.getId());
                 }
             });
-            childTask.setCancelTask(() -> future.cancel(true));
+            childTask.appendCancelTask(() -> future.cancel(true));
         }
         return true;
     }
@@ -113,6 +119,12 @@ public class SystemChildTaskExecutor implements ChildTaskExecutor {
         }
         groupChildTaskExecutorMap.clear();
         return true;
+    }
+
+    @Override
+    public Boolean isUsable() {
+        // 线程池被 clearAllChildTask 关掉后 map 会清空，视为不可用，需要重建
+        return !groupChildTaskExecutorMap.isEmpty();
     }
 
     private ThreadPoolExecutor getChildGroupHandler(String group) {

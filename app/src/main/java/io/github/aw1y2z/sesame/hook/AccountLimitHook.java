@@ -86,6 +86,16 @@ public final class AccountLimitHook {
     private static final String[] CURRENT_LIST_FIELDS = {
             "queryAccountList", "d", "c", "l", "t"
     };
+    /**
+     * 适配器（BaseAdapterA）自己的列表字段候选。
+     * <p>与 {@link #CURRENT_LIST_FIELDS} 分开：后者的 l/t 是 Activity 版本字段，
+     * 拿它们去适配器上找字段会挑错对象（适配器上恰好有同名的 Collection 字段时，
+     * 换掉的是无关集合，而 getItem 仍读真实列表，
+     * getCount 与实际条数不一致就会在 AbsListView 取 item 时越界崩溃）。
+     */
+    private static final String[] ADAPTER_LIST_FIELDS = {
+            "d", "c"
+    };
     /** 版本字段组：待删除字段 + 当前列表字段。 */
     private static final String[][] FIELD_PAIRS = {
             {"mNeedDeleteAccountList", "queryAccountList"},
@@ -108,6 +118,8 @@ public final class AccountLimitHook {
     private static boolean installed;
     private static boolean sAdapterHookInstalled;
     private static volatile List<Class<?>> sCountClasses;
+    /** dex 扫描是否已安排到后台线程 */
+    private static volatile boolean sScanScheduled;
 
     private AccountLimitHook() {
     }
@@ -116,12 +128,25 @@ public final class AccountLimitHook {
         if (installed || classLoader == null) {
             return;
         }
+        // 每一段单独兜住异常：任一段抛异常都不该让后面的 Hook 装不上
+        // （原实现里 hookCountClasses 抛异常会连带跳过适配器与诊断 Hook）
+        runSafely("BaseAccountManagerActivity", () -> hookBaseActivity(classLoader));
+        runSafely("getCount 类", () -> hookCountClasses(classLoader));
+        runSafely("AccountManagerV2Activity", () -> hookV2Activity(classLoader));
+        runSafely("列表适配器", () -> hookListAdapter(classLoader));
+        runSafely("页面诊断", () -> hookPageDiagnostics(classLoader));
         installed = true;
-        hookBaseActivity(classLoader);
-        hookCountClasses(classLoader);
-        hookV2Activity(classLoader);
-        hookListAdapter(classLoader);
-        hookPageDiagnostics(classLoader);
+        // dex 扫描放到后台：主线程扫 APK 会 ANR
+        scheduleCountClassScan(classLoader);
+    }
+
+    /** 装载某一段 Hook；失败只记录，不影响其余段落。 */
+    private static void runSafely(String name, Runnable action) {
+        try {
+            action.run();
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#装载 Hook 失败: " + name, t);
+        }
     }
 
     private static void hookBaseActivity(ClassLoader classLoader) {
@@ -161,7 +186,7 @@ public final class AccountLimitHook {
         }
     }
 
-    /** 已知候选 + 宿主 dex 扫描，按完整类名去重。 */
+    /** 已知候选类（同步、便宜）；dex 扫描结果由后台线程补进来。 */
     private static List<Class<?>> resolveCountClasses(ClassLoader classLoader) {
         List<Class<?>> cached = sCountClasses;
         if (cached != null) {
@@ -174,12 +199,50 @@ public final class AccountLimitHook {
                 resolved.put(clazz.getName(), clazz);
             }
         }
-        for (Class<?> clazz : scanCountClasses(classLoader)) {
-            resolved.put(clazz.getName(), clazz);
-        }
         List<Class<?>> result = new ArrayList<>(resolved.values());
         sCountClasses = result;
         return result;
+    }
+
+    /**
+     * dex 扫描很重（要遍历 APK 并逐个 {@code Class.forName}），
+     * 绝不能在宿主主线程做——这里是 Application.attach 之后立刻调用的，
+     * 主线程卡住会直接 ANR。
+     * <p>改成后台线程扫描：已知的候选类立刻可用，扫描结果稍后补上。
+     */
+    private static void scheduleCountClassScan(ClassLoader classLoader) {
+        if (sScanScheduled) {
+            return;
+        }
+        sScanScheduled = true;
+        Thread thread = new Thread(() -> {
+            try {
+                List<Class<?>> scanned = scanCountClasses(classLoader);
+                if (scanned.isEmpty()) {
+                    return;
+                }
+                synchronized (AccountLimitHook.class) {
+                    List<Class<?>> existing = sCountClasses;
+                    LinkedHashMap<String, Class<?>> merged = new LinkedHashMap<>();
+                    if (existing != null) {
+                        for (Class<?> clazz : existing) {
+                            merged.put(clazz.getName(), clazz);
+                        }
+                    }
+                    for (Class<?> clazz : scanned) {
+                        merged.put(clazz.getName(), clazz);
+                    }
+                    sCountClasses = new ArrayList<>(merged.values());
+                }
+                // 扫描到的类也要挂上 getCount Hook，否则补扫的结果没有意义
+                hookCountClasses(classLoader);
+                Log.i(TAG, "后台扫描到 " + scanned.size() + " 个 getCount 类");
+            } catch (Throwable t) {
+                Log.printStackTrace(TAG + "#后台扫描账号包失败", t);
+            }
+        }, "AccountLimitScan");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     /**
@@ -389,7 +452,9 @@ public final class AccountLimitHook {
         }
         sAdapterHookInstalled = true;
         int hooked = 0;
-        String[] classNames = {"android.widget.AbsListView", "android.widget.ListView"};
+        // 只挂 AbsListView.setAdapter：ListView.setAdapter 会调用 super.setAdapter，
+        // 两个都挂会让同一次赋值被处理两次（重复替换列表 + 重复 Hook getCount）
+        String[] classNames = {"android.widget.AbsListView"};
         for (String className : classNames) {
             Class<?> clazz = findClassQuietly(className, classLoader);
             if (clazz == null) {
@@ -460,25 +525,27 @@ public final class AccountLimitHook {
      */
     private static void applyFullListToAdapter(Object adapter) {
         List<?> full = sLastFullList;
-        if (full == null || full.isEmpty()
-                || System.currentTimeMillis() - sLastFullListTime > 60_000L) {
+        if (full == null || full.isEmpty()) {
             return;
         }
         Field field = findAdapterListField(adapter);
-        Object value = field != null ? readFieldValue(adapter, field) : null;
+        if (field == null) {
+            // 找不到适配器自己的列表字段：宁可不接管。
+            // 换错字段会让 getCount 与 getItem 读的不是同一个列表，取 item 时越界崩溃。
+            Log.i(TAG, "账号适配器未找到列表字段，跳过接管: " + adapter.getClass().getName());
+            return;
+        }
+        Object value = readFieldValue(adapter, field);
         boolean replaced = false;
-        if (field != null) {
-            if (value instanceof List && ((List<?>) value).size() >= full.size()) {
-                Log.i(TAG, "适配器列表已完整: " + adapter.getClass().getSimpleName()
-                        + "，数量: " + ((List<?>) value).size());
-            } else {
-                replaced = replaceListField(adapter, field, value, full);
-            }
+        if (value instanceof List && ((List<?>) value).size() >= full.size()) {
+            Log.i(TAG, "适配器列表已完整: " + adapter.getClass().getSimpleName()
+                    + "，数量: " + ((List<?>) value).size());
+        } else {
+            replaced = replaceListField(adapter, field, value, full);
         }
         hookAdapterGetCount(adapter, field);
         Log.i(TAG, "账号适配器已接管: " + adapter.getClass().getName()
-                + "，列表字段: " + (field == null ? "未找到"
-                : field.getName() + ":" + field.getType().getSimpleName())
+                + "，列表字段: " + field.getName() + ":" + field.getType().getSimpleName()
                 + "，替换: " + replaced + "，完整数量: " + full.size());
         if (replaced) {
             try {
@@ -489,25 +556,19 @@ public final class AccountLimitHook {
         }
     }
 
-    /** 优先取已知列表字段名，其次取适配器上第一个非待删除集合字段。 */
+    /**
+     * 找适配器上真正承载账号列表的字段。
+     * <p>只在适配器自己的候选字段（{@link #ADAPTER_LIST_FIELDS}）里找：
+     * 找不到就返回 null，宁可不接管，也不换掉一个无关集合——
+     * 换错字段会让 getCount 与 getItem 读的不是同一个列表，
+     * AbsListView 取 item 时就会越界崩溃。
+     */
     private static Field findAdapterListField(Object adapter) {
-        for (String name : CURRENT_LIST_FIELDS) {
+        for (String name : ADAPTER_LIST_FIELDS) {
             Field field = findField(adapter.getClass(), name);
             if (isCollectionField(field)) {
                 return field;
             }
-        }
-        Class<?> current = adapter.getClass();
-        while (current != null && current != Object.class) {
-            for (Field field : current.getDeclaredFields()) {
-                if (Modifier.isStatic(field.getModifiers())
-                        || !isCollectionField(field)
-                        || isPendingField(field.getName())) {
-                    continue;
-                }
-                return field;
-            }
-            current = current.getSuperclass();
         }
         return null;
     }
@@ -543,6 +604,11 @@ public final class AccountLimitHook {
     /** 运行时 Hook 适配器类的 getCount，返回其自身列表的真实长度。 */
     private static void hookAdapterGetCount(Object adapter, Field listField) {
         Class<?> clazz = adapter.getClass();
+        if (listField == null) {
+            // 没确定列表字段就不 Hook getCount：
+            // 否则 getCount 与 getItem 可能读的不是同一个列表，取 item 时越界崩溃
+            return;
+        }
         if (!sAdapterClasses.add(clazz.getName())) {
             return;
         }
@@ -564,19 +630,13 @@ public final class AccountLimitHook {
                         if (!FeatureFlagStore.isAccountListProtected()) {
                             return;
                         }
-                        // 优先读取接管时确定的列表字段，避免误取适配器上的其他集合字段。
-                        List<?> accounts = null;
-                        Object value = listField != null
-                                ? readFieldValue(param.thisObject, listField) : null;
-                        if (value instanceof List) {
-                            accounts = (List<?>) value;
+                        // 只认接管时确定的列表字段，避免误取适配器上的其他集合字段
+                        Object value = readFieldValue(param.thisObject, listField);
+                        if (!(value instanceof List)) {
+                            // 取不到就放行原方法，不要凭空报一个数
+                            return;
                         }
-                        if (accounts == null) {
-                            accounts = findAccountList(param.thisObject);
-                        }
-                        if (accounts != null) {
-                            param.setResult(accounts.size());
-                        }
+                        param.setResult(((List<?>) value).size());
                     }
                 });
                 count++;
@@ -766,7 +826,11 @@ public final class AccountLimitHook {
         return count;
     }
 
-    /** 取不到列表时返回 0。 */
+    /**
+     * getCount：返回真实账号数。
+     * <p>取不到列表时**放行原方法**：原实现直接返回 0，
+     * 账号页会显示成「一个账号都没有」，比不接管更糟。
+     */
     private static void hookGetCount(Method method) {
         XpCompatEngine.hookMethod(method, new XC_MethodHook() {
             @Override
@@ -775,7 +839,11 @@ public final class AccountLimitHook {
                     return;
                 }
                 List<?> accounts = findAccountList(param.thisObject);
-                param.setResult(accounts != null ? accounts.size() : 0);
+                if (accounts == null || accounts.isEmpty()) {
+                    // 没找到真实列表：交回原方法，别把账号页显示成空列表
+                    return;
+                }
+                param.setResult(accounts.size());
             }
         });
     }
@@ -783,7 +851,9 @@ public final class AccountLimitHook {
     /** H4：整方法置空，删除成为空操作。 */
     private static void hookDeleteMoreUserInfo(Class<?> clazz) {
         try {
-            Method method = clazz.getDeclaredMethod("deleteMoreUserInfo");
+            // 沿继承链找：宿主把它声明在父类时，getDeclaredMethod 找不到，
+            // 静默跳过会让「删除多余账号」的保护整个失效
+            Method method = XHelpers.findMethodUpwards(clazz, "deleteMoreUserInfo");
             if (Modifier.isStatic(method.getModifiers())) {
                 return;
             }
@@ -796,10 +866,8 @@ public final class AccountLimitHook {
                 }
             });
             Log.i(TAG, "deleteMoreUserInfo 已替换为空操作: " + clazz.getName());
-        } catch (NoSuchMethodException ignored) {
-            // 该类没有该方法。
         } catch (Throwable t) {
-            Log.printStackTrace(TAG + "#deleteMoreUserInfo 处理失败: " + clazz.getName(), t);
+            Log.i(TAG, "该类没有 deleteMoreUserInfo，跳过: " + clazz.getName());
         }
     }
 
