@@ -425,6 +425,48 @@ public abstract class ModelTask extends Model {
     }
 
     /**
+     * 只读诊断：任务为什么还没全部结束。返回空串表示已全部结束。
+     * <p>与 {@link #isAllTaskFinished()} 的区别：不修改任何状态（不清理线程表），
+     * 供切号调度在长时间等不到任务结束时定位卡点——哪个模型线程还活着、
+     * 哪个子任务条目一直不退出，避免「切号静默失效却查不到原因」。
+     */
+    public static String diagnoseUnfinished() {
+        if (roundDispatching) {
+            return "新一轮任务派发中";
+        }
+        for (Map.Entry<ModelTask, TaskRun> entry : MAIN_TASK_MAP.entrySet()) {
+            if (isStillRunning(entry.getValue())) {
+                TaskRun run = entry.getValue();
+                String state = run.thread == null
+                        ? "线程未启动" : "线程存活 " + run.thread.getName();
+                return "模型任务运行中: " + entry.getKey().getName() + "（" + state + "）";
+            }
+        }
+        long now = System.currentTimeMillis();
+        for (Model model : getModelArray()) {
+            if (model == null || ModelType.TASK != model.getType()) {
+                continue;
+            }
+            ModelTask task = (ModelTask) model;
+            for (ChildModelTask childTask : task.childTaskMap.values()) {
+                if (childTask == null || Boolean.TRUE.equals(childTask.getIsCancel())) {
+                    continue;
+                }
+                Long execTime = childTask.getExecTime();
+                if (execTime == null || execTime <= 0) {
+                    return "子任务条目异常: " + task.getName() + "/" + childTask.getId()
+                            + "（execTime=" + execTime + "）";
+                }
+                if (execTime <= now) {
+                    return "子任务未退出: " + task.getName() + "/" + childTask.getId()
+                            + "（已到期 " + ((now - execTime) / 1000L) + " 秒仍在表中）";
+                }
+            }
+        }
+        return "";
+    }
+
+    /**
      * 仍在运行的模型任务数量（含正在收尾的旧代线程）。
      * <p>切号时用它判断"旧账号的线程真的退出了没有"：{@link #isAllTaskFinished()}
      * 只能反映瞬时状态，线程退出是异步的，需要轮询确认。
