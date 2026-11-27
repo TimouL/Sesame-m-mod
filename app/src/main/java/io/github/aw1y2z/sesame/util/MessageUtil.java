@@ -65,6 +65,29 @@ public class MessageUtil {
         return jo.optString("memo", "").contains("服务器正在开小差");
     }
 
+    /**
+     * 幂等类「此前已生效」应答：服务端明确表示该动作已经做过（已领取 / 已完结 / 无法重复领取）。
+     * <p>这类应答是重复调用撞上既有结果的正常态，不是故障：既不写异常日志，也不落模块分类文件，
+     * 否则每轮补做都会刷一条 {@code xxx error:任务已领取} 到「其他记录」。
+     */
+    public static boolean isAlreadyDone(JSONObject jo) {
+        if (jo == null) {
+            return false;
+        }
+        for (String field : FAIL_TEXT_FIELDS) {
+            String text = jo.optString(field, "");
+            if (text.isEmpty()) {
+                continue;
+            }
+            if (text.contains("已领取") || text.contains("已完结")
+                    || text.contains("无法重复领取") || text.contains("重复领取")
+                    || text.contains("已经领取") || text.contains("已领完")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 在多个文案字段里找关键字（各接口字段不统一，不能只扫 desc） */
     private static boolean anyFieldContains(JSONObject jo, String keyword) {
         for (String field : FAIL_TEXT_FIELDS) {
@@ -84,6 +107,10 @@ public class MessageUtil {
     public static void printErrorMessage(String tag, JSONObject jo, String errorMessageField) {
         try {
             String memo = jo.getString(errorMessageField);
+            // 已领取/已完结这类幂等应答不是故障：不打印、不落分类文件
+            if (isAlreadyDone(jo)) {
+                return;
+            }
             if (isUnsupportedRpc(jo)) {
                 Log.error(tag + ", " + jo.toString());
                 return;
@@ -323,6 +350,7 @@ public class MessageUtil {
         BLACKLIST_LIST_TARGETS.put("MonopolyTaskList", new String[]{"AntForestV2", "新版保护地任务"});
         BLACKLIST_LIST_TARGETS.put("AntFarmDoFarmTaskList", new String[]{"AntFarm", "庄园饲料任务"});
         BLACKLIST_LIST_TARGETS.put("AntFarmDrawMachineTaskList", new String[]{"AntFarm", "庄园装扮抽抽乐任务"});
+        BLACKLIST_LIST_TARGETS.put("AntKitchenTaskList", new String[]{"AntFarm", "小鸡大厨任务"});
         BLACKLIST_LIST_TARGETS.put("AntDodoTaskList", new String[]{"AntDodo", "神奇物种任务"});
         BLACKLIST_LIST_TARGETS.put("AntOceanAntiepTaskList", new String[]{"AntOcean", "神奇海洋普通任务"});
         BLACKLIST_LIST_TARGETS.put("AntOceanFishBlackList", new String[]{"AntOcean", "神奇海洋去摸鱼任务"});
@@ -334,6 +362,7 @@ public class MessageUtil {
         BLACKLIST_LIST_TARGETS.put("AntStallTaskList", new String[]{"AntStall", "新村任务"});
         BLACKLIST_LIST_TARGETS.put("AntSportsTaskList", new String[]{"AntSports", "运动任务"});
         BLACKLIST_LIST_TARGETS.put("AntMemberTaskList", new String[]{"AntMember", "会员任务"});
+        BLACKLIST_LIST_TARGETS.put("AntMemberAdTaskList", new String[]{"AntMember", "会员广告任务"});
         BLACKLIST_LIST_TARGETS.put("MemberCreditSesameTaskList", new String[]{"AntMember", "会员芝麻信用任务芝麻粒"});
     }
 
@@ -527,6 +556,11 @@ public class MessageUtil {
                             || anyFieldContains(jo, "不是有效的入参")
                             || anyFieldContains(jo, "存在进行中的生活记录")
                             || anyFieldContains(jo, "生活记录模板不存在");
+                    break;
+
+                // 会员广告任务：失败响应无统一文案，也无另一种实现方案可重放，一律按连续确认记账
+                case "AntMemberAdTaskList":
+                    needConfirm = true;
                     break;
 
                 // 福利金任务：事件规则任务被 10000005「不允许完成事件规则任务」拒绝，文案里没有
