@@ -57,6 +57,8 @@ public final class AccountSwitchState {
     private String lastSwitchTo = "";
     private long lastSwitchAt;
     private String lastSwitchResult = "";
+    // 演练模式的虚拟当前账号：规划从它出发推进，真实登录账号不动；空串表示未启用/未推进
+    private String dryRunVirtualUid = "";
     // 状态卡片展示用：调度器发布的当前状态（阶段/当前账号/下一目标/最近事件/更新时间）
     private String statusPhase = "";
     private String statusUid = "";
@@ -280,6 +282,14 @@ public final class AccountSwitchState {
         return load();
     }
 
+    public synchronized String getDryRunVirtualUid() {
+        return dryRunVirtualUid;
+    }
+
+    public synchronized void setDryRunVirtualUid(String uid) {
+        dryRunVirtualUid = uid == null ? "" : uid;
+    }
+
     // ------------------------------------------------------------------
     // 落盘 / 加载
     // ------------------------------------------------------------------
@@ -316,6 +326,7 @@ public final class AccountSwitchState {
             last.put("at", lastSwitchAt);
             last.put("result", lastSwitchResult);
             json.put("lastSwitch", last);
+            json.put("dryRunVirtualUid", dryRunVirtualUid);
             JSONObject status = new JSONObject();
             status.put("phase", statusPhase);
             status.put("uid", statusUid);
@@ -385,6 +396,7 @@ public final class AccountSwitchState {
                 state.lastSwitchAt = last.optLong("at", 0L);
                 state.lastSwitchResult = last.optString("result", "");
             }
+            state.dryRunVirtualUid = json.optString("dryRunVirtualUid", "");
             JSONObject status = json.optJSONObject("status");
             if (status != null) {
                 state.statusPhase = status.optString("phase", "");

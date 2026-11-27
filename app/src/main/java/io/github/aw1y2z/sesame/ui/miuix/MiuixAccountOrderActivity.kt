@@ -195,6 +195,12 @@ fun AccountSwitchStatusCard() {
         if (!config.isAccountSwitchEnabled) {
             SwitchStatusRow("状态", "自动切换登录账号未开启，在设置中开启后这里显示调度状态")
         } else {
+            if (config.isAccountSwitchDryRun) {
+                SwitchStatusRow("模式", "演练模式（只记计划，不真正切换）")
+                if (state.dryRunVirtualUid.isNotEmpty()) {
+                    SwitchStatusRow("演练进度", "计划已推进到 ${display(state.dryRunVirtualUid)}")
+                }
+            }
             val phaseText = when (state.statusPhase) {
                 "RUNNING" -> "运行中"
                 "SWITCHING" -> "切换中"

@@ -92,6 +92,21 @@ public final class AccountSwitchConfig {
         }
     }
 
+    /** 是否开启切号演练模式（只记录计划，不真正切换），默认关闭 */
+    public static boolean isAccountSwitchDryRun() {
+        try {
+            return read().isAccountSwitchDryRun();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    public static synchronized boolean setAccountSwitchDryRun(boolean dryRun) {
+        Snapshot snapshot = readFresh();
+        snapshot.setAccountSwitchDryRun(dryRun);
+        return write(snapshot);
+    }
+
     public static int getAccountSwitchIntervalMinutes() {
         try {
             return read().getAccountSwitchIntervalMinutes();
@@ -263,6 +278,7 @@ public final class AccountSwitchConfig {
         try {
             JSONObject json = new JSONObject(text);
             snapshot.setAccountSwitchEnabled(json.optBoolean("accountSwitchEnabled", false));
+            snapshot.setAccountSwitchDryRun(json.optBoolean("accountSwitchDryRun", false));
             snapshot.setAccountSwitchIntervalMinutes(
                     clampMinutes(json.optInt("accountSwitchIntervalMinutes", 0)));
             snapshot.setAccountSwitchRoundIntervalMinutes(
@@ -310,6 +326,7 @@ public final class AccountSwitchConfig {
         try {
             JSONObject json = new JSONObject();
             json.put("accountSwitchEnabled", snapshot.isAccountSwitchEnabled());
+            json.put("accountSwitchDryRun", snapshot.isAccountSwitchDryRun());
             json.put("accountSwitchIntervalMinutes",
                     clampMinutes(snapshot.getAccountSwitchIntervalMinutes()));
             json.put("accountSwitchRoundIntervalMinutes",
@@ -496,6 +513,8 @@ public final class AccountSwitchConfig {
     public static final class Snapshot {
 
         private boolean accountSwitchEnabled;
+        /** 演练模式：只记录计划切换，不真正切换账号，默认关闭 */
+        private boolean accountSwitchDryRun;
         private int accountSwitchIntervalMinutes;
         private int accountSwitchRoundIntervalMinutes;
         private String accountSwitchFinalAccountUid = "";
@@ -528,6 +547,14 @@ public final class AccountSwitchConfig {
 
         public void setAccountSwitchEnabled(boolean accountSwitchEnabled) {
             this.accountSwitchEnabled = accountSwitchEnabled;
+        }
+
+        public boolean isAccountSwitchDryRun() {
+            return accountSwitchDryRun;
+        }
+
+        public void setAccountSwitchDryRun(boolean accountSwitchDryRun) {
+            this.accountSwitchDryRun = accountSwitchDryRun;
         }
 
         public int getAccountSwitchIntervalMinutes() {
@@ -576,6 +603,7 @@ public final class AccountSwitchConfig {
         public Snapshot copy() {
             Snapshot copy = new Snapshot();
             copy.accountSwitchEnabled = accountSwitchEnabled;
+            copy.accountSwitchDryRun = accountSwitchDryRun;
             copy.accountSwitchIntervalMinutes = accountSwitchIntervalMinutes;
             copy.accountSwitchRoundIntervalMinutes = accountSwitchRoundIntervalMinutes;
             copy.accountSwitchFinalAccountUid = accountSwitchFinalAccountUid;

@@ -20,6 +20,7 @@ import io.github.aw1y2z.sesame.data.Model;
 import io.github.aw1y2z.sesame.data.ModelFields;
 import io.github.aw1y2z.sesame.data.ModelGroup;
 import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchBooleanModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchDryRunModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchFinalAccountModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchIntervalModelField;
 import io.github.aw1y2z.sesame.data.modelFieldExt.AccountSwitchListModelField;
@@ -66,6 +67,10 @@ public class BaseModel extends Model {
     private static final AccountSwitchBooleanModelField accountSwitchEnabled =
             new AccountSwitchBooleanModelField("accountSwitchEnabled", "自动切换登录账号", false)
                     .setDescription("开启后按下面的顺序循环切换支付宝登录账号；账号列表在模块启动时自动读取");
+    @Getter
+    private static final AccountSwitchDryRunModelField accountSwitchDryRun =
+            new AccountSwitchDryRunModelField("accountSwitchDryRun", "切号演练模式(只记计划不真切)", false)
+                    .setDescription("开启后调度器照常规划，只在切号日志里记录计划切换的时间与目标，不真正切换账号、不停任务；用来核对轮换顺序与时间线，确认无误后关掉即真实执行");
     @Getter
     private static final AccountSwitchIntervalModelField accountSwitchIntervalMinutes =
             new AccountSwitchIntervalModelField("accountSwitchIntervalMinutes",
@@ -143,6 +148,7 @@ public class BaseModel extends Model {
         modelFields.addField(rpcRequestTaskList);
         // 自动切换登录账号：全部是全局配置，值存在公共配置文件里
         modelFields.addField(accountSwitchEnabled);
+        modelFields.addField(accountSwitchDryRun);
         modelFields.addField(accountSwitchIntervalMinutes);
         modelFields.addField(accountSwitchRoundIntervalMinutes);
         modelFields.addField(accountSwitchAccounts);

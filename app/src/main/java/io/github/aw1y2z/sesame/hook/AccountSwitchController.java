@@ -137,6 +137,8 @@ public final class AccountSwitchController {
     private static volatile boolean tasksHeld;
     /** 是否有切换流程正在执行（流程串行化，同一时刻最多一个） */
     private static volatile boolean flowActive;
+    /** 演练模式：已为当前真实任务轮次出过计划，等下一轮任务开始后再继续推演 */
+    private static volatile boolean dryRunAwaitingRun;
     private static volatile long runStartTime;
     private static volatile long tasksStartedAt;
     private static volatile long idleSince;
@@ -242,8 +244,12 @@ public final class AccountSwitchController {
         intervalWaitLogged = false;
         unfinishedSince = 0;
         lastDiagnosedReason = null;
+        // 新一轮真实任务开始：演练推演可以继续出下一份计划
+        dryRunAwaitingRun = false;
+        // 演练模式下轮次等待是虚拟的：真实账号必然与虚拟保持账号不同，不能据此取消等待
         if (phase == Phase.ROUND_WAIT && !StringUtil.isEmpty(uid)
-                && !uid.equals(AccountSwitchConfig.getAccountSwitchFinalAccountUid())) {
+                && !uid.equals(AccountSwitchConfig.getAccountSwitchFinalAccountUid())
+                && !AccountSwitchConfig.isAccountSwitchDryRun()) {
             // 轮次等待期间实际跑起来的不是保持账号（人工切号/对账纠正），等待作废
             phase = Phase.RUNNING;
             resumeAt = 0;
@@ -453,6 +459,11 @@ public final class AccountSwitchController {
                 // 账号不足时只补全列表，不提交注定失败的切换（维护逻辑在前面已处理）
                 return;
             }
+            if (config.isAccountSwitchDryRun() && dryRunAwaitingRun) {
+                // 演练模式：一轮真实任务只出一份计划，避免计划以最小间隔连环推进、
+                // 把时间线推得比真实执行快得多；等当前账号下一轮任务开始后继续
+                return;
+            }
             submitRotate();
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#自动切号检查失败", t);
@@ -543,8 +554,14 @@ public final class AccountSwitchController {
         } else if (now - roundWaitLastLogAt >= ROUND_WAIT_LOG_INTERVAL_MILLIS) {
             roundWaitLastLogAt = now;
             long remainMinutes = (resumeAt - now + 59_999L) / 60_000L;
+            // 演练模式下等待的是虚拟保持账号，日志按虚拟游标报，避免和真实账号对不上
+            String waitUid = currentHost.currentUid();
+            if (AccountSwitchConfig.isAccountSwitchDryRun()
+                    && !StringUtil.isEmpty(state().getDryRunVirtualUid())) {
+                waitUid = state().getDryRunVirtualUid();
+            }
             Log.accountSwitch("自动切号🔄️ 轮次等待中，当前保持账号: "
-                    + label(currentHost.currentUid())
+                    + label(waitUid)
                     + "，预计还需 " + remainMinutes + " 分钟");
         }
     }
@@ -646,6 +663,14 @@ public final class AccountSwitchController {
             phase = Phase.RUNNING;
             resumeAt = 0;
             pendingTargetUid = null;
+        }
+        if (AccountSwitchConfig.isAccountSwitchDryRun()) {
+            // 演练模式：到点只记计划，不终止当前账号的任务
+            scheduledRetryCount = 0;
+            scheduledPending = true;
+            scheduledFireAt = now + SCHEDULE_SWITCH_DELAY_MILLIS;
+            Log.accountSwitch("自动切号🔄️【演练】定时切号时间到，20 秒后记录计划（不终止当前任务）");
+            return;
         }
         tasksHeld = true;
         try {
@@ -788,6 +813,7 @@ public final class AccountSwitchController {
                 return;
             }
             fromUid = currentUid;
+            String realUid = currentUid;
             Map<String, AlipayAccountSwitchBridge.HostAccount> hostMap = hostMap();
             AccountSwitchState st = state();
             long now = System.currentTimeMillis();
@@ -808,6 +834,18 @@ public final class AccountSwitchController {
             if (uids.size() < 2) {
                 failRecover(currentHost, FAILED_RETRY_MILLIS);
                 return;
+            }
+            // 演练模式：规划从虚拟当前账号出发推进，真实登录账号不动；
+            // 关掉演练后清掉虚拟游标，真实规划从实际账号重新开始
+            boolean dryRun = config.isAccountSwitchDryRun();
+            if (dryRun) {
+                String virtual = st.getDryRunVirtualUid();
+                if (!StringUtil.isEmpty(virtual) && uids.contains(virtual)) {
+                    currentUid = virtual;
+                }
+            } else if (!StringUtil.isEmpty(st.getDryRunVirtualUid())) {
+                st.setDryRunVirtualUid("");
+                st.persist();
             }
             String holdUid = config.getAccountSwitchFinalAccountUid();
             List<String> effective = SwitchPlanner.effectiveOrder(uids, holdUid);
@@ -837,7 +875,9 @@ public final class AccountSwitchController {
                     pendingTargetUid = target.uid;
                     roundWaitLastLogAt = now;
                     tasksHeld = false;
-                    publishStatus(Phase.ROUND_WAIT, currentUid, target.uid, "进入轮次等待");
+                    // 演练模式下当前账号一栏仍显示真实在跑的账号，虚拟进度看状态里的游标
+                    publishStatus(Phase.ROUND_WAIT, dryRun ? realUid : currentUid,
+                            target.uid, "进入轮次等待");
                     currentHost.resume();
                     Log.accountSwitch("自动切号🔄️ 常态保持账号 " + label(currentUid)
                             + " 进入轮次等待，期间按执行间隔继续运行，约 "
@@ -847,6 +887,27 @@ public final class AccountSwitchController {
                 }
                 Log.accountSwitch("自动切号🔄️ 常态保持账号 " + label(currentUid)
                         + " 的轮次等待时间已到，直接切换");
+            }
+
+            if (dryRun) {
+                // 演练：只记计划并推进虚拟游标（到达保持账号时同步模拟轮次等待的起点），
+                // 不停任务、不调宿主切换、不记失败；计划节奏由 tick 的单轮一计划闸门控制
+                st.setDryRunVirtualUid(target.uid);
+                if (target.arrivingHold) {
+                    st.setHoldEnteredAt(now);
+                } else if (currentIsHold) {
+                    st.setHoldEnteredAt(0);
+                }
+                st.persist();
+                dryRunAwaitingRun = true;
+                tasksHeld = false;
+                publishStatus(Phase.RUNNING, realUid, target.uid,
+                        "演练：计划切换到 " + label(target.uid));
+                Log.accountSwitch("自动切号🔄️【演练】计划切换: " + label(currentUid)
+                        + " -> " + label(target.uid)
+                        + (target.roundEnd ? "（本轮结束）" : "")
+                        + "，演练模式不真正执行");
+                return;
             }
 
             String loginId = resolveLoginId(target.uid, config, hostMap);
@@ -936,6 +997,18 @@ public final class AccountSwitchController {
                     eligible.add(account.getUid());
                 }
             }
+            // 演练模式：规划同样从虚拟当前账号出发，真实登录账号不动
+            boolean dryRun = config.isAccountSwitchDryRun();
+            String realUid = currentUid;
+            if (dryRun) {
+                String virtual = st.getDryRunVirtualUid();
+                if (!StringUtil.isEmpty(virtual) && uids.contains(virtual)) {
+                    currentUid = virtual;
+                }
+            } else if (!StringUtil.isEmpty(st.getDryRunVirtualUid())) {
+                st.setDryRunVirtualUid("");
+                st.persist();
+            }
             String holdUid = config.getAccountSwitchFinalAccountUid();
             List<String> effective = SwitchPlanner.effectiveOrder(uids, holdUid);
             String targetUid = null;
@@ -952,6 +1025,22 @@ public final class AccountSwitchController {
             if (targetUid == null) {
                 Log.accountSwitch("自动切号🔄️ 定时切号未找到可切换的账号");
                 failRecover(currentHost, FAILED_RETRY_MILLIS);
+                return;
+            }
+            if (dryRun) {
+                // 演练：只记计划并推进虚拟游标（与真实成功一样记下保持账号进入时刻），
+                // 不停任务、不调宿主切换、不占用定时重试预算
+                st.setDryRunVirtualUid(targetUid);
+                st.setHoldEnteredAt(now);
+                st.persist();
+                dryRunAwaitingRun = true;
+                tasksHeld = false;
+                scheduledRetryCount = 0;
+                publishStatus(Phase.RUNNING, realUid, targetUid,
+                        "演练：定时计划切到 " + label(targetUid));
+                Log.accountSwitch("自动切号🔄️【演练】定时切号计划: " + label(currentUid)
+                        + " -> " + label(targetUid) + "，演练模式不真正执行");
+                phase = Phase.RUNNING;
                 return;
             }
             String loginId = resolveLoginId(targetUid, config, hostMap);
