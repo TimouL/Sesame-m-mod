@@ -57,6 +57,12 @@ public final class AccountSwitchState {
     private String lastSwitchTo = "";
     private long lastSwitchAt;
     private String lastSwitchResult = "";
+    // 状态卡片展示用：调度器发布的当前状态（阶段/当前账号/下一目标/最近事件/更新时间）
+    private String statusPhase = "";
+    private String statusUid = "";
+    private String statusNextUid = "";
+    private String statusEvent = "";
+    private long statusUpdatedAt;
 
     private AccountSwitchState() {
     }
@@ -196,6 +202,84 @@ public final class AccountSwitchState {
         return lastSwitchResult + " " + lastSwitchFrom + "->" + lastSwitchTo + "@" + lastSwitchAt;
     }
 
+    public synchronized String getLastSwitchFrom() {
+        return lastSwitchFrom;
+    }
+
+    public synchronized String getLastSwitchTo() {
+        return lastSwitchTo;
+    }
+
+    public synchronized long getLastSwitchAt() {
+        return lastSwitchAt;
+    }
+
+    public synchronized String getLastSwitchResult() {
+        return lastSwitchResult;
+    }
+
+    // ------------------------------------------------------------------
+    // 状态发布（状态卡片）：调度器在阶段迁移时调用，UI 进程用 readFresh 读
+    // ------------------------------------------------------------------
+
+    /**
+     * 发布当前状态并立即落盘。参数为 null 表示保持原值；
+     * nextUid 传空串表示明确清空（已无下一目标）。
+     */
+    public synchronized void publishStatus(String phase, String uid, String nextUid, String event) {
+        if (phase != null) {
+            statusPhase = phase;
+        }
+        if (uid != null) {
+            statusUid = uid;
+        }
+        if (nextUid != null) {
+            statusNextUid = nextUid;
+        }
+        if (event != null) {
+            statusEvent = event;
+        }
+        statusUpdatedAt = System.currentTimeMillis();
+        persist();
+    }
+
+    /** 心跳：只刷新更新时间（及顺带校正阶段/当前账号），让 UI 能判断调度器是否还活着 */
+    public synchronized void heartbeat(String phase, String uid) {
+        if (!StringUtil.isEmpty(phase)) {
+            statusPhase = phase;
+        }
+        if (!StringUtil.isEmpty(uid)) {
+            statusUid = uid;
+        }
+        statusUpdatedAt = System.currentTimeMillis();
+        persist();
+    }
+
+    public synchronized String getStatusPhase() {
+        return statusPhase;
+    }
+
+    public synchronized String getStatusUid() {
+        return statusUid;
+    }
+
+    public synchronized String getStatusNextUid() {
+        return statusNextUid;
+    }
+
+    public synchronized String getStatusEvent() {
+        return statusEvent;
+    }
+
+    public synchronized long getStatusUpdatedAt() {
+        return statusUpdatedAt;
+    }
+
+    /** 从磁盘新鲜读取一份状态（不走单例缓存），供 UI 进程展示状态卡片 */
+    public static AccountSwitchState readFresh() {
+        return load();
+    }
+
     // ------------------------------------------------------------------
     // 落盘 / 加载
     // ------------------------------------------------------------------
@@ -232,6 +316,13 @@ public final class AccountSwitchState {
             last.put("at", lastSwitchAt);
             last.put("result", lastSwitchResult);
             json.put("lastSwitch", last);
+            JSONObject status = new JSONObject();
+            status.put("phase", statusPhase);
+            status.put("uid", statusUid);
+            status.put("nextUid", statusNextUid);
+            status.put("event", statusEvent);
+            status.put("updatedAt", statusUpdatedAt);
+            json.put("status", status);
             return FileUtil.write2File(json.toString(2), getFile());
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#保存 account_switch_state.json 失败", t);
@@ -293,6 +384,14 @@ public final class AccountSwitchState {
                 state.lastSwitchTo = last.optString("to", "");
                 state.lastSwitchAt = last.optLong("at", 0L);
                 state.lastSwitchResult = last.optString("result", "");
+            }
+            JSONObject status = json.optJSONObject("status");
+            if (status != null) {
+                state.statusPhase = status.optString("phase", "");
+                state.statusUid = status.optString("uid", "");
+                state.statusNextUid = status.optString("nextUid", "");
+                state.statusEvent = status.optString("event", "");
+                state.statusUpdatedAt = status.optLong("updatedAt", 0L);
             }
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#解析 account_switch_state.json 失败，按空白状态恢复", t);

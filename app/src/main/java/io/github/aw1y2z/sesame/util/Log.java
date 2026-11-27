@@ -151,6 +151,15 @@ public class Log {
                     .flattener(new PatternFlattener("{d HH:mm:ss.SSS} {t}: {m}"))
                     .build()).build();
 
+    /** 自动切号专用日志：切号事件独立成文件，不再混在运行日志里 */
+    private static final Logger accountSwitchLogger = XLog.tag("ACCOUNTSWITCH").printers(
+            new FilePrinter.Builder(FileUtil.LOG_DIRECTORY_FILE.getPath())
+                    .fileNameGenerator(new CustomDateFileNameGenerator("accountswitch"))
+                    .backupStrategy(new NeverBackupStrategy())
+                    .cleanStrategy(new NeverCleanStrategy())
+                    .flattener(new PatternFlattener("{d HH:mm:ss.SSS} {t}: {m}"))
+                    .build()).build();
+
     private static final Logger farmLogger = XLog.tag("FARM").printers(
             new FilePrinter.Builder(FileUtil.LOG_DIRECTORY_FILE.getPath())
                     .fileNameGenerator(new CustomDateFileNameGenerator("farm"))
@@ -350,6 +359,15 @@ public class Log {
     public static void magicBox(String s) {
         countModuleLog();
         writeModuleLog(s, io.github.aw1y2z.sesame.data.AppConfig.INSTANCE.getEnableMagicBoxLog(), magicBoxLogger);
+    }
+
+    /**
+     * 自动切号事件日志：只写切号分类文件（accountswitch.&lt;date&gt;.log），
+     * 不进运行日志。切号调度/桥层的所有事件都走这里，排查切号问题只看这一个文件；
+     * 异常堆栈仍走异常日志（printStackTrace），事件行里会注明。
+     */
+    public static void accountSwitch(String s) {
+        writeModuleLog(s, io.github.aw1y2z.sesame.data.AppConfig.INSTANCE.getEnableAccountSwitchLog(), accountSwitchLogger);
     }
 
     public static void farm(String s) {

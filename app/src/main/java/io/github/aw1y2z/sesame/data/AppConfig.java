@@ -39,6 +39,7 @@ public class AppConfig {
     private Boolean enableFarmLog = true;
     private Boolean enableOtherLog = true;
     private Boolean enableMagicBoxLog = true;
+    private Boolean enableAccountSwitchLog = true;
     /**
      * 抓包记录。
      * <p>同时充当 /debugHandler（PC 调用任意 RPC）的门禁：两者都是调试专用、默认关闭，
@@ -149,6 +150,9 @@ public class AppConfig {
 
     public Boolean getEnableMagicBoxLog() { return enableMagicBoxLog; }
     public void setEnableMagicBoxLog(Boolean value) { enableMagicBoxLog = value; }
+
+    public Boolean getEnableAccountSwitchLog() { return enableAccountSwitchLog; }
+    public void setEnableAccountSwitchLog(Boolean value) { enableAccountSwitchLog = value; }
 
     public Boolean getEnableFarmLog() { return enableFarmLog; }
     public void setEnableFarmLog(Boolean value) { enableFarmLog = value; }

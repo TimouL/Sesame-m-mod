@@ -701,6 +701,14 @@ fun LogsTab(activity: MiuixMainActivity) {
             activity.broadcastReloadConfig()
             if (!it) FileUtil.clearLog("other")
         }
+        var accountSwitch by remember { mutableStateOf(AppConfig.INSTANCE.enableAccountSwitchLog ?: true) }
+        LogSwitchRow("切号记录", accountSwitch, onClick = { openLog(activity, LogType.ACCOUNTSWITCH) }) {
+            accountSwitch = it
+            AppConfig.INSTANCE.enableAccountSwitchLog = it
+            AppConfig.save()
+            activity.broadcastReloadConfig()
+            if (!it) FileUtil.clearLog("accountswitch")
+        }
     }
     Spacer(Modifier.height(16.dp))
 

@@ -187,6 +187,24 @@ public final class AccountSwitchController {
         return AccountSwitchState.get();
     }
 
+    /** 发布状态给状态卡片（宿主进程写、UI 进程读同一份落盘状态）；失败不影响调度 */
+    private static void publishStatus(Phase p, String uid, String nextUid, String event) {
+        try {
+            state().publishStatus(p == null ? null : p.name(), uid, nextUid, event);
+        } catch (Throwable ignored) {
+            // 状态发布失败不影响切号本身
+        }
+    }
+
+    /** 心跳：刷新状态时间戳与当前账号，让状态卡片能判断调度器是否还活着 */
+    private static void publishHeartbeat(String uid) {
+        try {
+            state().heartbeat(phase.name(), uid);
+        } catch (Throwable ignored) {
+            // 同上
+        }
+    }
+
     public static void configure(Host newHost) {
         synchronized (LOCK) {
             host = newHost;
@@ -230,9 +248,10 @@ public final class AccountSwitchController {
             phase = Phase.RUNNING;
             resumeAt = 0;
             pendingTargetUid = null;
-            Log.record("自动切号🔄️ 轮次等待期间账号已变更，取消轮次等待");
+            Log.accountSwitch("自动切号🔄️ 轮次等待期间账号已变更，取消轮次等待");
         }
-        Log.record("自动切号🔄️ 账号开始运行: " + label(uid));
+        publishHeartbeat(uid);
+        Log.accountSwitch("自动切号🔄️ 账号开始运行: " + label(uid));
     }
 
     /** 一轮任务已下发，允许开始判断任务是否全部结束 */
@@ -302,11 +321,11 @@ public final class AccountSwitchController {
             List<AccountSwitchConfig.Account> accounts =
                     AlipayAccountSwitchBridge.fetchAccountsForConfig();
             if (accounts.isEmpty()) {
-                Log.record("自动切号🔄️ 未读取到支付宝登录账号");
+                Log.accountSwitch("自动切号🔄️ 未读取到支付宝登录账号");
                 return;
             }
             AccountSwitchConfig.mergeHostAccounts(accounts);
-            Log.record("自动切号🔄️ 账号列表已同步，共 "
+            Log.accountSwitch("自动切号🔄️ 账号列表已同步，共 "
                     + AccountSwitchConfig.getAccountSwitchAccounts().size() + " 个账号");
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#同步登录账号失败", t);
@@ -391,7 +410,7 @@ public final class AccountSwitchController {
                     String reason = ModelTask.diagnoseUnfinished();
                     if (!StringUtil.isEmpty(reason) && !reason.equals(lastDiagnosedReason)) {
                         lastDiagnosedReason = reason;
-                        Log.record("自动切号🔄️ 任务长时间未结束，暂不切号：" + reason);
+                        Log.accountSwitch("自动切号🔄️ 任务长时间未结束，暂不切号：" + reason);
                     }
                 }
                 return;
@@ -424,7 +443,7 @@ public final class AccountSwitchController {
                 if (!intervalWaitLogged) {
                     intervalWaitLogged = true;
                     long remainMinutes = (intervalMillis - waitedMillis + 59_999L) / 60_000L;
-                    Log.record("自动切号🔄️ 当前账号任务已全部完成，距离切号间隔还需 "
+                    Log.accountSwitch("自动切号🔄️ 当前账号任务已全部完成，距离切号间隔还需 "
                             + remainMinutes + " 分钟，等待中");
                 }
                 return;
@@ -448,6 +467,11 @@ public final class AccountSwitchController {
             AccountSwitchState st = state();
             st.setLastScheduleCheckAt(now);
             st.persist();
+            try {
+                st.publishStatus("", null, "", "自动切换已关闭");
+            } catch (Throwable ignored) {
+                // 状态发布失败不影响关闭流程
+            }
         }
         scheduledPending = false;
         scheduledPreempt = false;
@@ -514,12 +538,12 @@ public final class AccountSwitchController {
             resumeAt = 0;
             pendingTargetUid = null;
             phase = Phase.RUNNING;
-            Log.record("自动切号🔄️ 轮次等待结束，开始下一轮");
+            Log.accountSwitch("自动切号🔄️ 轮次等待结束，开始下一轮");
             submitRotate();
         } else if (now - roundWaitLastLogAt >= ROUND_WAIT_LOG_INTERVAL_MILLIS) {
             roundWaitLastLogAt = now;
             long remainMinutes = (resumeAt - now + 59_999L) / 60_000L;
-            Log.record("自动切号🔄️ 轮次等待中，当前保持账号: "
+            Log.accountSwitch("自动切号🔄️ 轮次等待中，当前保持账号: "
                     + label(currentHost.currentUid())
                     + "，预计还需 " + remainMinutes + " 分钟");
         }
@@ -543,19 +567,21 @@ public final class AccountSwitchController {
             st.clearQuarantine(actual);
             st.clearFailures(actual);
             st.persist();
-            Log.record("自动切号🔄️ 检测到账号 " + label(actual) + " 已手动登录，解除隔离");
+            Log.accountSwitch("自动切号🔄️ 检测到账号 " + label(actual) + " 已手动登录，解除隔离");
         }
+        publishHeartbeat(actual);
         String loaded = currentHost.currentUid();
         if (StringUtil.isEmpty(loaded) || actual.equals(loaded)) {
             return false;
         }
-        Log.record("自动切号🔄️ 看门狗：实际登录账号与已加载账号不一致（实际 "
+        Log.accountSwitch("自动切号🔄️ 看门狗：实际登录账号与已加载账号不一致（实际 "
                 + label(actual) + "，已加载 " + label(loaded) + "），按实际账号重新加载");
         RunGeneration.advanceAccountEpoch();
         if (!currentHost.initialize(actual, true)) {
             // 宿主侧 uid 缓存可能还没跟上，下一轮对账再试
-            Log.record("自动切号🔄️ 看门狗：按实际账号加载未完成，等待下一轮对账");
+            Log.accountSwitch("自动切号🔄️ 看门狗：按实际账号加载未完成，等待下一轮对账");
         }
+        publishStatus(Phase.RUNNING, actual, "", "看门狗按实际账号重载");
         return true;
     }
 
@@ -594,7 +620,7 @@ public final class AccountSwitchController {
                 if (now - scheduledAt <= SCHEDULE_CATCHUP_MILLIS) {
                     fired = true;
                 } else {
-                    Log.record("自动切号🔄️ 定时点 " + time + " 已错过超过 "
+                    Log.accountSwitch("自动切号🔄️ 定时点 " + time + " 已错过超过 "
                             + (SCHEDULE_CATCHUP_MILLIS / 60_000L) + " 分钟，跳过本次");
                 }
             }
@@ -613,7 +639,7 @@ public final class AccountSwitchController {
             scheduledPending = true;
             // 任务本来就停着，接管不需要再等 20 秒
             scheduledFireAt = now;
-            Log.record("自动切号🔄️ 定时切号时间到，当前切换收尾后立即接管");
+            Log.accountSwitch("自动切号🔄️ 定时切号时间到，当前切换收尾后立即接管");
             return;
         }
         if (phase == Phase.ROUND_WAIT) {
@@ -630,7 +656,7 @@ public final class AccountSwitchController {
         scheduledRetryCount = 0;
         scheduledPending = true;
         scheduledFireAt = now + SCHEDULE_SWITCH_DELAY_MILLIS;
-        Log.record("自动切号🔄️ 定时切号时间到，已终止当前账号任务，20 秒后切换到保持账号");
+        Log.accountSwitch("自动切号🔄️ 定时切号时间到，已终止当前账号任务，20 秒后切换到保持账号");
     }
 
     // ------------------------------------------------------------------
@@ -648,7 +674,7 @@ public final class AccountSwitchController {
             final String fromUid = confirmFromUid;
             final boolean arrivingHold = confirmArrivingHold;
             confirmHandling = true;
-            Log.record("自动切号🔄️ 未知态对账：账号已落地到目标 " + label(target));
+            Log.accountSwitch("自动切号🔄️ 未知态对账：账号已落地到目标 " + label(target));
             if (!submitFlow(() -> {
                 confirmTargetUid = null;
                 confirmHandling = false;
@@ -664,7 +690,7 @@ public final class AccountSwitchController {
             // 连续两次读到同一个非目标账号：切换落到了别处（或被人工干预），按事实恢复
             final String landed = actual;
             confirmHandling = true;
-            Log.record("自动切号🔄️ 未知态对账：账号落在 " + label(landed) + "，按实际账号恢复");
+            Log.accountSwitch("自动切号🔄️ 未知态对账：账号落在 " + label(landed) + "，按实际账号恢复");
             if (!submitFlow(() -> {
                 confirmTargetUid = null;
                 confirmHandling = false;
@@ -677,7 +703,7 @@ public final class AccountSwitchController {
         lastConfirmActual = actual;
         if (now >= confirmDeadline) {
             confirmHandling = true;
-            Log.record("自动切号🔄️ 未知态对账超时，按实际登录账号恢复");
+            Log.accountSwitch("自动切号🔄️ 未知态对账超时，按实际登录账号恢复");
             if (!submitFlow(() -> {
                 confirmTargetUid = null;
                 confirmHandling = false;
@@ -696,6 +722,7 @@ public final class AccountSwitchController {
     private static void submitRotate() {
         tasksHeld = true;
         phase = Phase.SWITCHING;
+        publishStatus(Phase.SWITCHING, null, null, "开始切换");
         if (!submitFlow(AccountSwitchController::flowRotate)) {
             tasksHeld = false;
             phase = Phase.RUNNING;
@@ -756,7 +783,7 @@ public final class AccountSwitchController {
             String currentUid = AlipayAccountSwitchBridge.currentUid();
             if (StringUtil.isEmpty(currentUid)) {
                 // 读不到当前账号时不能盲目切号，避免切到错误账号或把登录态切丢
-                Log.record("自动切号🔄️ 读取当前登录账号失败，稍后重试");
+                Log.accountSwitch("自动切号🔄️ 读取当前登录账号失败，稍后重试");
                 failRecover(currentHost, FAILED_RETRY_MILLIS);
                 return;
             }
@@ -791,7 +818,7 @@ public final class AccountSwitchController {
             SwitchPlanner.Target target = SwitchPlanner.nextTarget(
                     effective, currentUid, holdRoundEnd, eligible, holdUid, holdUsable);
             if (target == null) {
-                Log.record("自动切号🔄️ 没有可切换的账号（无登录记录或全部隔离中），稍后重试");
+                Log.accountSwitch("自动切号🔄️ 没有可切换的账号（无登录记录或全部隔离中），稍后重试");
                 failRecover(currentHost, FAILED_RETRY_MILLIS);
                 return;
             }
@@ -810,19 +837,20 @@ public final class AccountSwitchController {
                     pendingTargetUid = target.uid;
                     roundWaitLastLogAt = now;
                     tasksHeld = false;
+                    publishStatus(Phase.ROUND_WAIT, currentUid, target.uid, "进入轮次等待");
                     currentHost.resume();
-                    Log.record("自动切号🔄️ 常态保持账号 " + label(currentUid)
+                    Log.accountSwitch("自动切号🔄️ 常态保持账号 " + label(currentUid)
                             + " 进入轮次等待，期间按执行间隔继续运行，约 "
                             + ((waitRemainMillis + 59_999L) / 60_000L) + " 分钟后切换到 "
                             + label(target.uid));
                     return;
                 }
-                Log.record("自动切号🔄️ 常态保持账号 " + label(currentUid)
+                Log.accountSwitch("自动切号🔄️ 常态保持账号 " + label(currentUid)
                         + " 的轮次等待时间已到，直接切换");
             }
 
             String loginId = resolveLoginId(target.uid, config, hostMap);
-            Log.record("自动切号🔄️ 开始切换: " + label(currentUid) + " -> " + label(target.uid)
+            Log.accountSwitch("自动切号🔄️ 开始切换: " + label(currentUid) + " -> " + label(target.uid)
                     + (target.roundEnd ? "（本轮结束）" : ""));
             quiesce(currentHost);
             if (!AccountSwitchConfig.read().isAccountSwitchEnabled()) {
@@ -847,6 +875,7 @@ public final class AccountSwitchController {
             confirmTargetUid = target.uid;
             confirmArrivingHold = target.arrivingHold;
             lastConfirmActual = null;
+            publishStatus(Phase.CONFIRMING, fromUid, target.uid, "等待切换落地");
             if (waitForAccount(target.uid, CONFIRM_TIMEOUT_MILLIS)) {
                 confirmTargetUid = null;
                 loadAccount(currentHost, fromUid, target.uid, target.arrivingHold, currentIsHold);
@@ -854,9 +883,11 @@ public final class AccountSwitchController {
             }
             // 确认超时 ≠ 失败：进入未知态，任务保持暂停，tick 持续对账到截止时刻
             confirmDeadline = System.currentTimeMillis() + CONFIRM_UNKNOWN_MILLIS;
-            Log.record("自动切号🔄️ 等待账号切换超时，进入未知态继续对账（最长 "
+            publishStatus(Phase.CONFIRMING, fromUid, target.uid, "确认超时，未知态对账中");
+            Log.accountSwitch("自动切号🔄️ 等待账号切换超时，进入未知态继续对账（最长 "
                     + (CONFIRM_UNKNOWN_MILLIS / 60_000L) + " 分钟），期间任务保持暂停");
         } catch (Throwable t) {
+            Log.accountSwitch("自动切号🔄️ 切换流程异常（堆栈见异常日志）: " + t);
             Log.printStackTrace(TAG + "#切换账号失败", t);
             failRecover(currentHost, FAILED_RETRY_MILLIS);
         } finally {
@@ -886,7 +917,7 @@ public final class AccountSwitchController {
             }
             String currentUid = AlipayAccountSwitchBridge.currentUid();
             if (StringUtil.isEmpty(currentUid)) {
-                Log.record("自动切号🔄️ 读取当前登录账号失败，取消定时切号");
+                Log.accountSwitch("自动切号🔄️ 读取当前登录账号失败，取消定时切号");
                 scheduleRetryOrGiveUp(currentHost, "读取当前登录账号失败");
                 return;
             }
@@ -919,13 +950,14 @@ public final class AccountSwitchController {
                 }
             }
             if (targetUid == null) {
-                Log.record("自动切号🔄️ 定时切号未找到可切换的账号");
+                Log.accountSwitch("自动切号🔄️ 定时切号未找到可切换的账号");
                 failRecover(currentHost, FAILED_RETRY_MILLIS);
                 return;
             }
             String loginId = resolveLoginId(targetUid, config, hostMap);
             boolean sameAccount = targetUid.equals(currentUid);
-            Log.record("自动切号🔄️ 定时切号开始: " + label(currentUid) + " -> " + label(targetUid));
+            Log.accountSwitch("自动切号🔄️ 定时切号开始: " + label(currentUid) + " -> " + label(targetUid));
+            publishStatus(Phase.SWITCHING, currentUid, targetUid, "定时切号开始");
             quiesce(currentHost);
             if (!sameAccount) {
                 AlipayAccountSwitchBridge.SwitchResult result =
@@ -942,14 +974,14 @@ public final class AccountSwitchController {
                     return;
                 }
                 if (!waitForAccount(targetUid, CONFIRM_TIMEOUT_MILLIS)) {
-                    Log.record("自动切号🔄️ 定时切号等待账号切换超时");
+                    Log.accountSwitch("自动切号🔄️ 定时切号等待账号切换超时");
                     scheduleRetryOrGiveUp(currentHost, "等待账号切换超时");
                     return;
                 }
             }
             if (scheduledPreempt) {
                 // 执行期间又有新的定时点到达：放弃本次，等新的定时流程重新执行
-                Log.record("自动切号🔄️ 新的定时切号已接管，取消本次切换");
+                Log.accountSwitch("自动切号🔄️ 新的定时切号已接管，取消本次切换");
                 abortForScheduled();
                 return;
             }
@@ -962,14 +994,16 @@ public final class AccountSwitchController {
                 st.recordSwitch(currentUid, targetUid, System.currentTimeMillis(), "scheduled_ok");
                 st.persist();
                 nextAttemptAt = 0;
-                Log.record("自动切号🔄️ 定时切号完成，已切换到 " + label(targetUid) + " 并开始执行");
+                publishStatus(Phase.RUNNING, targetUid, "", "定时切号完成");
+                Log.accountSwitch("自动切号🔄️ 定时切号完成，已切换到 " + label(targetUid) + " 并开始执行");
             } else {
-                Log.record("自动切号🔄️ 切换后加载账号失败");
+                Log.accountSwitch("自动切号🔄️ 切换后加载账号失败");
                 scheduleRetryOrGiveUp(currentHost, "切换后加载账号失败");
                 return;
             }
             phase = Phase.RUNNING;
         } catch (Throwable t) {
+            Log.accountSwitch("自动切号🔄️ 定时切号异常（堆栈见异常日志）: " + t);
             Log.printStackTrace(TAG + "#定时切号失败", t);
             scheduleRetryOrGiveUp(currentHost, "定时切号异常");
         } finally {
@@ -986,7 +1020,7 @@ public final class AccountSwitchController {
         RunGeneration.advanceAccountEpoch();
         currentHost.pause();
         if (!ModelTask.waitForAllTaskStopped(WAIT_TASK_STOPPED_MILLIS)) {
-            Log.record("自动切号🔄️ 旧账号任务未在 " + (WAIT_TASK_STOPPED_MILLIS / 1000)
+            Log.accountSwitch("自动切号🔄️ 旧账号任务未在 " + (WAIT_TASK_STOPPED_MILLIS / 1000)
                     + " 秒内完全退出；账号纪元已推进，旧线程将在检查点作废，继续切换");
         }
     }
@@ -1009,14 +1043,14 @@ public final class AccountSwitchController {
                         AccountSwitchState.REASON_MANUAL_LOGIN);
                 st.recordSwitch(fromUid, targetUid, now, "need_manual_login");
                 st.persist();
-                Log.record("自动切号🔄️ 目标账号 " + label(targetUid)
+                Log.accountSwitch("自动切号🔄️ 目标账号 " + label(targetUid)
                         + " 需要先手动登录一次，已隔离该账号（手动登录后自动解除），本次跳过");
                 return FAILED_RETRY_MILLIS;
             case METHOD_MISSING:
                 st.setSwitchDisabledUntil(now + GLOBAL_DISABLE_MILLIS);
                 st.recordSwitch(fromUid, targetUid, now, "method_missing");
                 st.persist();
-                Log.record("自动切号🔄️ 当前支付宝版本未找到切号方法，已熔断切号 "
+                Log.accountSwitch("自动切号🔄️ 当前支付宝版本未找到切号方法，已熔断切号 "
                         + (GLOBAL_DISABLE_MILLIS / 60_000L) + " 分钟，请关注模块更新");
                 return FAILED_RETRY_MILLIS;
             default:
@@ -1025,18 +1059,18 @@ public final class AccountSwitchController {
                 if (failures >= ACCOUNT_FAILURE_BUDGET) {
                     st.quarantine(targetUid, now + QUARANTINE_REPEATED_MILLIS,
                             AccountSwitchState.REASON_REPEATED_FAILURES);
-                    Log.record("自动切号🔄️ 目标账号 " + label(targetUid) + " 连续失败 "
+                    Log.accountSwitch("自动切号🔄️ 目标账号 " + label(targetUid) + " 连续失败 "
                             + failures + " 次，已隔离 " + (QUARANTINE_REPEATED_MILLIS / 60_000L)
                             + " 分钟");
                 }
                 if (global >= GLOBAL_FAILURE_BUDGET) {
                     st.setSwitchDisabledUntil(now + GLOBAL_DISABLE_MILLIS);
-                    Log.record("自动切号🔄️ 全局连续失败达 " + global + " 次，已熔断切号 "
+                    Log.accountSwitch("自动切号🔄️ 全局连续失败达 " + global + " 次，已熔断切号 "
                             + (GLOBAL_DISABLE_MILLIS / 60_000L) + " 分钟");
                 }
                 st.recordSwitch(fromUid, targetUid, now, "failed:" + result.status);
                 st.persist();
-                Log.record("自动切号🔄️ 切号被拒（" + result.status + "：" + result.detail
+                Log.accountSwitch("自动切号🔄️ 切号被拒（" + result.status + "：" + result.detail
                         + "），目标 " + label(targetUid));
                 return backoffMillis(failures);
         }
@@ -1067,10 +1101,12 @@ public final class AccountSwitchController {
             st.recordSwitch(fromUid, targetUid, now, "ok");
             st.persist();
             nextAttemptAt = 0;
-            Log.record("自动切号🔄️ 已切换到账号: " + label(targetUid)
+            publishStatus(Phase.RUNNING, targetUid, "",
+                    "已切换到 " + label(targetUid) + (arrivingHold ? "（本轮结束）" : ""));
+            Log.accountSwitch("自动切号🔄️ 已切换到账号: " + label(targetUid)
                     + (arrivingHold ? "（本轮结束）" : ""));
         } else {
-            Log.record("自动切号🔄️ 切换后加载账号失败，按实际登录账号恢复");
+            Log.accountSwitch("自动切号🔄️ 切换后加载账号失败，按实际登录账号恢复");
             recoverToActual(currentHost, FAILED_RETRY_MILLIS);
             return;
         }
@@ -1097,6 +1133,7 @@ public final class AccountSwitchController {
         }
         // resume 会触发 onAccountRunStarted，这里在它之后设置退避才不会被覆盖
         nextAttemptAt = System.currentTimeMillis() + retryDelayMillis;
+        publishStatus(Phase.RUNNING, actual, "", "按实际账号恢复运行");
         phase = Phase.RUNNING;
     }
 
@@ -1114,24 +1151,26 @@ public final class AccountSwitchController {
             Log.printStackTrace(TAG + "#恢复任务失败", t);
         }
         nextAttemptAt = System.currentTimeMillis() + retryDelayMillis;
+        publishStatus(Phase.RUNNING, currentHost.currentUid(), "", null);
         phase = Phase.RUNNING;
     }
 
     /** 开关被关掉时取消本次切换并恢复运行 */
     private static void releaseToCurrent(Host currentHost, String message) {
-        Log.record("自动切号🔄️ " + message);
+        Log.accountSwitch("自动切号🔄️ " + message);
         tasksHeld = false;
         try {
             currentHost.resume();
         } catch (Throwable t) {
             Log.printStackTrace(TAG + "#恢复任务失败", t);
         }
+        publishStatus(Phase.RUNNING, currentHost.currentUid(), "", "已取消切换，恢复运行");
         phase = Phase.RUNNING;
     }
 
     /** 定时切号已接管：任务保持停止，本流程直接退出，tick 随即提交定时流程 */
     private static void abortForScheduled() {
-        Log.record("自动切号🔄️ 定时切号已接管，取消本次切号");
+        Log.accountSwitch("自动切号🔄️ 定时切号已接管，取消本次切号");
         tasksHeld = true;
         phase = Phase.RUNNING;
     }
@@ -1145,11 +1184,11 @@ public final class AccountSwitchController {
             // 等待确认超时这类失败里，登录态可能正在迁移：按事实恢复，
             // 避免用旧账号的配置在新登录态下跑任务（迟到落地由看门狗兜底）
             recoverToActual(currentHost, 0L);
-            Log.record("自动切号🔄️ 定时切号失败（" + reason + "），60 秒后重试（第 "
+            Log.accountSwitch("自动切号🔄️ 定时切号失败（" + reason + "），60 秒后重试（第 "
                     + scheduledRetryCount + " 次）");
         } else {
             scheduledRetryCount = 0;
-            Log.record("自动切号🔄️ 定时切号重试次数已达上限，放弃本次（" + reason + "）");
+            Log.accountSwitch("自动切号🔄️ 定时切号重试次数已达上限，放弃本次（" + reason + "）");
             failRecover(currentHost, FAILED_RETRY_MILLIS);
             return;
         }

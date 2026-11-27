@@ -221,7 +221,7 @@ public class ApplicationHook extends XposedModule {
                     String current = getUserId();
                     if (!StringUtil.isEmpty(uid) && !uid.equals(current)) {
                         // 实际登录账号还没切过来时不能初始化，否则会把上一个账号的配置加载进内存
-                        Log.record("自动切号🔄️ 已登录账号与目标不一致，跳过配置加载: 目标["
+                        Log.accountSwitch("自动切号🔄️ 已登录账号与目标不一致，跳过配置加载: 目标["
                                 + uid + "] 实际[" + current + "]");
                         return false;
                     }
@@ -254,7 +254,7 @@ public class ApplicationHook extends XposedModule {
                     // 失败恢复：登录账号与内存配置不一致（切号已生效但初始化失败/登录态抖动）时，
                     // 按实际登录的账号重新加载配置，避免用上一个账号的配置继续跑任务
                     if (!StringUtil.isEmpty(uid) && !uid.equals(UserIdMap.getCurrentUid())) {
-                        Log.record("自动切号🔄️ 恢复运行：登录账号与内存配置不一致，重新加载配置");
+                        Log.accountSwitch("自动切号🔄️ 恢复运行：登录账号与内存配置不一致，重新加载配置");
                         if (Boolean.TRUE.equals(initHandler(true, true))) {
                             return;
                         }
@@ -588,7 +588,7 @@ public class ApplicationHook extends XposedModule {
                                     }
                                     // 自动切号：切号中/轮次等待中不再启动新一轮任务
                                     if (AccountSwitchController.isPaused()) {
-                                        Log.record("自动切号中，暂停任务执行");
+                                        Log.accountSwitch("自动切号中，暂停任务执行");
                                         return;
                                     }
                                     Log.record("应用版本：" + alipayVersion.getVersionString());
@@ -642,7 +642,7 @@ public class ApplicationHook extends XposedModule {
                                         // 这属于正常收尾，不能当成"检查失败"去拉起登录页：
                                         // 登录页会打断切号流程，表现为切号频繁失败。
                                         if (AccountSwitchController.isPaused()) {
-                                            Log.record("自动切号中，结束本轮检查");
+                                            Log.accountSwitch("自动切号中，结束本轮检查");
                                             return;
                                         }
                                         Log.record("执行失败：检查中断");
@@ -1060,7 +1060,7 @@ public class ApplicationHook extends XposedModule {
                 updateDay();
                 BaseModel.initData();
                 BaseModel.initRpcRequest();
-                Log.record("自动切换登录账号：" + (AccountSwitchConfig.isAccountSwitchEnabled() ? "已开启" : "已关闭")
+                Log.accountSwitch("自动切换登录账号：" + (AccountSwitchConfig.isAccountSwitchEnabled() ? "已开启" : "已关闭")
                         + "，切号间隔：" + AccountSwitchConfig.getAccountSwitchIntervalMinutes() + " 分钟"
                         + "，轮次间隔：" + AccountSwitchConfig.getAccountSwitchRoundIntervalMinutes() + " 分钟"
                         + "，账号数：" + AccountSwitchConfig.getAccountSwitchAccounts().size());

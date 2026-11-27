@@ -829,6 +829,11 @@ public class FileUtil {
         File magicBoxLogFile = getFile(LOG_DIRECTORY_FILE, Log.getLogFileName("magicbox"));
         return ensureFileExists(magicBoxLogFile);
     }
+
+    public static File getAccountSwitchLogFile() {
+        File accountSwitchLogFile = getFile(LOG_DIRECTORY_FILE, Log.getLogFileName("accountswitch"));
+        return ensureFileExists(accountSwitchLogFile);
+    }
     
     public static File getErrorLogFile() {
         File errorLogFile = getFile(LOG_DIRECTORY_FILE, Log.getLogFileName("error"));

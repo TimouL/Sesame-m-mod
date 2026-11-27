@@ -148,7 +148,7 @@ public final class AlipayAccountSwitchBridge {
      */
     public static SwitchResult switchToAccount(String uid, String loginId) {
         if (!isValidUid(uid) || StringUtil.isEmpty(loginId)) {
-            Log.record("自动切号🔄️ 缺少账号登录标识，无法切换: " + uid);
+            Log.accountSwitch("自动切号🔄️ 缺少账号登录标识，无法切换: " + uid);
             return new SwitchResult(SwitchStatus.INVALID, "missing uid/loginId");
         }
         Object loginService;
@@ -161,7 +161,7 @@ public final class AlipayAccountSwitchBridge {
             return new SwitchResult(SwitchStatus.ERROR, "service: " + t);
         }
         if (login == null) {
-            Log.record("自动切号🔄️ 当前支付宝版本未找到切换账号方法");
+            Log.accountSwitch("自动切号🔄️ 当前支付宝版本未找到切换账号方法");
             return new SwitchResult(SwitchStatus.METHOD_MISSING, "login method not found");
         }
         Bundle bundle = new Bundle();
@@ -170,11 +170,11 @@ public final class AlipayAccountSwitchBridge {
         try {
             result = login.invoke(loginService, loginId, null, "switchAccount", null, null, true, bundle);
         } catch (Throwable t) {
-            Log.record("自动切号🔄️ 调用切号接口异常: " + t);
+            Log.accountSwitch("自动切号🔄️ 调用切号接口异常: " + t);
             return new SwitchResult(SwitchStatus.ERROR, "invoke: " + t);
         }
         // 切号被拒时没有更多信息，把支付宝返回的状态打出来便于定位（尤其是从主账号切出失败时）
-        Log.record("自动切号🔄️ 切号接口返回: " + describeResult(result)
+        Log.accountSwitch("自动切号🔄️ 切号接口返回: " + describeResult(result)
                 + "，当前=" + currentUid() + "，目标=" + maskLoginId(loginId) + "(" + uid + ")");
         if (result == null) {
             return new SwitchResult(SwitchStatus.REJECTED, "null result");
@@ -187,7 +187,7 @@ public final class AlipayAccountSwitchBridge {
         Integer status = readStatus(result);
         if (status != null) {
             if (status == STATUS_NEED_RELOGIN) {
-                Log.record("自动切号🔄️ 目标账号需要先手动登录一次"
+                Log.accountSwitch("自动切号🔄️ 目标账号需要先手动登录一次"
                         + "（支付宝返回 1014：请输入账号密码重新登录）: " + maskLoginId(loginId));
                 return new SwitchResult(SwitchStatus.NEED_MANUAL_LOGIN, "status 1014");
             }
@@ -328,7 +328,7 @@ public final class AlipayAccountSwitchBridge {
         }
         if (!loginMethodLogged) {
             loginMethodLogged = true;
-            Log.record("自动切号🔄️ 切号方法: " + describeSignature(chosen)
+            Log.accountSwitch("自动切号🔄️ 切号方法: " + describeSignature(chosen)
                     + (strict == null ? "（宽松匹配）" : "")
                     + (candidates > 1 ? "（共 " + candidates + " 个候选）" : ""));
         }

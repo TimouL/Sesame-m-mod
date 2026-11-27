@@ -76,6 +76,7 @@ enum class LogType(val displayName: String) {
     FARM("庄园记录"),
     OTHER("其他记录"),
     MAGICBOX("魔盒记录"),
+    ACCOUNTSWITCH("切号记录"),
     DEBUG("抓包记录"),
     ERROR("查看异常日志"),
     RUNTIME("查看运行日志");
@@ -88,6 +89,7 @@ enum class LogType(val displayName: String) {
             FARM -> FileUtil.getFarmLogFile()
             OTHER -> FileUtil.getOtherLogFile()
             MAGICBOX -> FileUtil.getMagicBoxLogFile()
+            ACCOUNTSWITCH -> FileUtil.getAccountSwitchLogFile()
             DEBUG -> FileUtil.getDebugLogFile()
             ERROR -> FileUtil.getErrorLogFile()
             RUNTIME -> FileUtil.getRuntimeLogFile()
