@@ -26,7 +26,7 @@ public class FileUtil {
     /** 账号目录名白名单：uid 由宿主给出，拼进路径前必须挡住「..」与路径分隔符 */
     private static final Pattern USER_ID_PATTERN = Pattern.compile("[0-9A-Za-z_-]+");
     //路径
-    public static final String CONFIG_DIRECTORY_NAME = "sesame-M";
+    public static final String CONFIG_DIRECTORY_NAME = "sesame-M-mod";
     public static final File MAIN_DIRECTORY_FILE = getMainDirectoryFile();
     public static final File CONFIG_DIRECTORY_FILE = getConfigDirectoryFile();
     public static final File LOG_DIRECTORY_FILE = getLogDirectoryFile();
@@ -477,7 +477,7 @@ public class FileUtil {
     }
 
     /**
-     * 宿主私有目录 sesame-M（与共享目录同名，仅宿主可读写）。必须在读令牌前调用：
+     * 宿主私有目录 sesame-M-mod（与共享目录同名，仅宿主可读写）。必须在读令牌前调用：
      * 未初始化时 {@link #getHttpTokenFile()} 直接抛错而不回退共享目录——那里的令牌等于公开。
      */
     public static void initPrivateDirectory(Context context) {
