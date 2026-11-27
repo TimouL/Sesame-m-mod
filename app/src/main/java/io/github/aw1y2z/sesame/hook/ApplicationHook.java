@@ -42,6 +42,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.aw1y2z.sesame.util.compat.XC_MethodReplacement;
 import io.github.aw1y2z.sesame.BuildConfig;
+import io.github.aw1y2z.sesame.data.AccountSwitchConfig;
 import io.github.aw1y2z.sesame.data.ConfigV2;
 import io.github.aw1y2z.sesame.data.Model;
 import io.github.aw1y2z.sesame.data.ModelGroup;
@@ -65,6 +66,7 @@ import io.github.aw1y2z.sesame.rpc.bridge.RpcVersion;
 import io.github.aw1y2z.sesame.rpc.intervallimit.RpcIntervalLimit;
 import io.github.aw1y2z.sesame.util.ClassUtil;
 import io.github.aw1y2z.sesame.util.FileUtil;
+import io.github.aw1y2z.sesame.util.FeatureFlagStore;
 import io.github.aw1y2z.sesame.util.Log;
 import io.github.aw1y2z.sesame.util.NotificationUtil;
 import io.github.aw1y2z.sesame.util.PermissionUtil;
@@ -82,6 +84,9 @@ import io.github.libxposed.api.XposedModuleInterface;
 public class ApplicationHook extends XposedModule {
 
     private static final String TAG = ApplicationHook.class.getSimpleName();
+
+    /** 旧版滑动手势支持的最高支付宝版本，超过则走拼图/RDS 验证链路 */
+    private static final String LEGACY_SLIDER_MAX_VERSION = "10.6.58.99999";
 
     /** 好友个人主页所属的小程序 appId（抓包取证）。 */
     private static final String PROFILE_APP_ID = "20002167";
@@ -197,6 +202,70 @@ public class ApplicationHook extends XposedModule {
     private static Handler mainHandler;
 
     private static BaseTask mainTask;
+
+    /** 自动切号调度器与宿主交互入口 */
+    private final AccountSwitchController.Host accountSwitchHost =
+            new AccountSwitchController.Host() {
+                @Override
+                public String currentUid() {
+                    return getUserId();
+                }
+
+                @Override
+                public boolean isReadyForSwitch() {
+                    return init && !offline && service != null && getUserId() != null;
+                }
+
+                @Override
+                public boolean initialize(String uid, boolean startMain) {
+                    String current = getUserId();
+                    if (!StringUtil.isEmpty(uid) && !uid.equals(current)) {
+                        // 实际登录账号还没切过来时不能初始化，否则会把上一个账号的配置加载进内存
+                        Log.record("自动切号🔄️ 已登录账号与目标不一致，跳过配置加载: 目标["
+                                + uid + "] 实际[" + current + "]");
+                        return false;
+                    }
+                    Boolean result = initHandler(true, startMain);
+                    return Boolean.TRUE.equals(result);
+                }
+
+                @Override
+                public void pause() {
+                    try {
+                        if (mainTask != null) {
+                            mainTask.stopTask();
+                        }
+                    } catch (Throwable t) {
+                        Log.printStackTrace(TAG + "#暂停主任务失败", t);
+                    }
+                    ModelTask.stopAllTask();
+                    // 任务停止后把当前账号的内存配置落盘，保证切完号后 UI 从磁盘读到的是最新配置
+                    try {
+                        ConfigV2.save(UserIdMap.getCurrentUid(), false);
+                    } catch (Throwable t) {
+                        Log.printStackTrace(TAG + "#切号前保存配置失败", t);
+                    }
+                }
+
+                @Override
+                public void resume() {
+                    offline = false;
+                    String uid = getUserId();
+                    // 失败恢复：登录账号与内存配置不一致（切号已生效但初始化失败/登录态抖动）时，
+                    // 按实际登录的账号重新加载配置，避免用上一个账号的配置继续跑任务
+                    if (!StringUtil.isEmpty(uid) && !uid.equals(UserIdMap.getCurrentUid())) {
+                        Log.record("自动切号🔄️ 恢复运行：登录账号与内存配置不一致，重新加载配置");
+                        if (Boolean.TRUE.equals(initHandler(true, true))) {
+                            return;
+                        }
+                    }
+                    AccountSwitchController.onAccountRunStarted(uid);
+                    // pause() 刚停掉主任务时，它的执行槽可能还没被上一代线程归还：
+                    // 此时 startTask 会因抢不到槽而放弃，本轮就白跑（下次要等一整个执行间隔）。
+                    // startMainTask 内部会重试，等上一代线程退出后再起跑。
+                    startMainTask();
+                }
+            };
 
     private static RpcBridge rpcBridge;
 
@@ -338,7 +407,7 @@ public class ApplicationHook extends XposedModule {
                         MiniProgramHook.install(classLoader, processName);
                         // 同步调用：异步写法会被当成不阻塞，实际这里会等初始化完成
                         // 启动时不再调 getAuthCode：返回值被丢弃，且在当前版本必然失败（facade 为 null）
-                        initSimplePageManager();
+                        installFeatureHooks();
                     } catch (Exception e) {
                         Log.printStackTrace(e);
                     }
@@ -517,6 +586,11 @@ public class ApplicationHook extends XposedModule {
                                     if (!init) {
                                         return;
                                     }
+                                    // 自动切号：切号中/轮次等待中不再启动新一轮任务
+                                    if (AccountSwitchController.isPaused()) {
+                                        Log.record("自动切号中，暂停任务执行");
+                                        return;
+                                    }
                                     Log.record("应用版本：" + alipayVersion.getVersionString());
                                     Log.record("模块版本：" + modelVersion);
                                     Log.record("开始执行");
@@ -530,13 +604,19 @@ public class ApplicationHook extends XposedModule {
                                     String currentUid = UserIdMap.getCurrentUid();
                                     if (targetUid == null || currentUid == null) {
                                         Log.record("用户为空，放弃执行");
-                                        reLogin();
+                                        // 切号过程中登录态正在变动，读不到属正常，等切号流程接管
+                                        if (!AccountSwitchController.isPaused()) {
+                                            reLogin();
+                                        }
                                         return;
                                     }
                                     if (!targetUid.equals(currentUid)) {
                                         Log.record("开始切换用户");
-                                        Toast.show("开始切换用户");
-                                        reLogin();
+                                        // 切号过程中两个 uid 本来就会短暂不一致，别去拉登录页打断切号
+                                        if (!AccountSwitchController.isPaused()) {
+                                            Toast.show("开始切换用户");
+                                            reLogin();
+                                        }
                                         return;
                                     }
                                     // 本轮 check 的起点单独留一份：waitTime 只依赖它，不再依赖会被后续重写的 lastExecTime
@@ -558,6 +638,13 @@ public class ApplicationHook extends XposedModule {
                                         reLoginCount.set(0);
                                     } catch (InterruptedException | ExecutionException |
                                              TimeoutException e) {
+                                        // 切号/重载会中断本线程（stopTask 里 old.interrupt()），
+                                        // 这属于正常收尾，不能当成"检查失败"去拉起登录页：
+                                        // 登录页会打断切号流程，表现为切号频繁失败。
+                                        if (AccountSwitchController.isPaused()) {
+                                            Log.record("自动切号中，结束本轮检查");
+                                            return;
+                                        }
                                         Log.record("执行失败：检查中断");
                                         reLogin();
                                         return;
@@ -569,6 +656,7 @@ public class ApplicationHook extends XposedModule {
                                     }
                                     TaskCommon.update();
                                     ModelTask.startAllTask(false);
+                                    AccountSwitchController.onTasksStarted();
                                     lastExecTime = System.currentTimeMillis();
 
                                     try {
@@ -903,6 +991,12 @@ public class ApplicationHook extends XposedModule {
      */
     private synchronized Boolean runInit(Boolean force, boolean exec) {
         destroyHandler(force);
+        // destroyHandler 只是通知旧模型线程作废，它们要到下一个检查点才真正退出。
+        // 这里等它们退完再建新模型，否则新旧两代任务会同时跑 ——
+        // 切号时就是「上一个账号的收尾动作」与「新账号的任务」重叠。
+        if (!ModelTask.waitForAllTaskStopped(TASK_STOP_WAIT_MILLIS)) {
+            Log.record("旧任务未在 " + (TASK_STOP_WAIT_MILLIS / 1000) + " 秒内退出，继续重载");
+        }
         try {
             if (force) {
                 String userId = getUserId();
@@ -918,6 +1012,13 @@ public class ApplicationHook extends XposedModule {
                 UserIdMap.initUser(userId);
                 Model.initAllModel();
                 ConfigV2.load(userId);
+                // 验证/账号限制 Hook：配置加载后按最新的全局开关再装一次
+                // （开关在公共配置文件里，不随账号配置走，这里保证改开关后重载配置即可生效）
+                installFeatureHooks();
+                // 自动切号：启动调度器，并在后台线程同步支付宝登录账号
+                // （反射调用支付宝服务不能在主线程做，否则会卡住宿主）
+                AccountSwitchController.configure(accountSwitchHost);
+                AccountSwitchController.requestAccountSync();
 
                 boolean enableModule = Model.getModel(BaseModel.class).getEnableField().getValue();
                 if (!enableModule) {
@@ -959,11 +1060,16 @@ public class ApplicationHook extends XposedModule {
                 updateDay();
                 BaseModel.initData();
                 BaseModel.initRpcRequest();
+                Log.record("自动切换登录账号：" + (AccountSwitchConfig.isAccountSwitchEnabled() ? "已开启" : "已关闭")
+                        + "，切号间隔：" + AccountSwitchConfig.getAccountSwitchIntervalMinutes() + " 分钟"
+                        + "，轮次间隔：" + AccountSwitchConfig.getAccountSwitchRoundIntervalMinutes() + " 分钟"
+                        + "，账号数：" + AccountSwitchConfig.getAccountSwitchAccounts().size());
                 Toast.show("芝麻粒加载成功");
                 init = true;
             }
             offline = false;
             if (exec) {
+                AccountSwitchController.onAccountRunStarted(getUserId());
                 execHandler();
             } else {
                 // 只重载、不执行：但仍要排上下一跳——destroyHandler 已把旧排期清掉，
@@ -1123,17 +1229,44 @@ public class ApplicationHook extends XposedModule {
     /** 单轮 check 的超时窗口：既是 FutureTask.get 的上限，也是失败后补齐到整轮网格的基准 */
     private static final long CHECK_TIMEOUT_MS = 10_000;
 
+    /** 重载/切号时等待旧任务线程真正退出的超时 */
+    private static final long TASK_STOP_WAIT_MILLIS = 30_000L;
+
     /** 起跳的公共实现：线程起不来等异常不能逃到宿主主线程（执行槽已由 BaseTask 归还） */
     private static void startMainTask() {
+        startMainTaskWithRetry(MAIN_TASK_SLOT_RETRY_TIMES, MAIN_TASK_SLOT_RETRY_INTERVAL);
+    }
+
+    /** 主任务执行槽未就绪时的重试次数与间隔（切号后上一代线程退出需要一点时间） */
+    private static final int MAIN_TASK_SLOT_RETRY_TIMES = 6;
+    private static final long MAIN_TASK_SLOT_RETRY_INTERVAL = 500L;
+
+    /**
+     * 起跳并在执行槽被占用时重试。
+     * <p>{@code BaseTask.startTask} 抢不到槽就放弃本轮；切号暂停任务后立刻恢复时，
+     * 上一代线程可能还没退出，这一轮就白跑了（要等一整个执行间隔才会再来）。
+     * <p>重试用尽后走常规兜底续排，保证任务链不断。
+     */
+    private static void startMainTaskWithRetry(int remainTimes, long intervalMillis) {
         try {
             if (Boolean.TRUE.equals(mainTask.startTask(false)) || tickScheduled) {
                 return;
             }
-            // 没跑起来（check 不通过等）又无人排期：兜底续排，否则链断
-            execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
         } catch (Throwable t) {
             Log.printStackTrace(t);
         }
+        if (remainTimes <= 0) {
+            // 重试用尽：按常规间隔续排，别让任务链断掉
+            execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
+            return;
+        }
+        Handler handler = mainHandler;
+        if (handler == null) {
+            execDelayedHandler(Math.max(BaseModel.getCheckInterval().getValue(), FALLBACK_INTERVAL));
+            return;
+        }
+        final int next = remainTimes - 1;
+        handler.postDelayed(() -> startMainTaskWithRetry(next, intervalMillis), intervalMillis);
     }
 
     /** 是否已有待发的下一跳：单链之下既用它兜底续排，又不覆盖本轮更早的显式排期（定时执行、reLogin 快重试） */
@@ -2092,14 +2225,83 @@ public class ApplicationHook extends XposedModule {
             return false;
         }
 
-        AlipayVersion maxSupported = new AlipayVersion("10.6.58.99999");
+        AlipayVersion maxSupported = new AlipayVersion(LEGACY_SLIDER_MAX_VERSION);
         if (alipayVersion.compareTo(maxSupported) > 0) {
             // 只有在不支持时才打印警告
-            Log.record("目标应用版本[" + alipayVersion.getVersionString() + "]高于[10.6.58.99999]不支持自动过滑块验证");
+            Log.record("目标应用版本[" + alipayVersion.getVersionString() + "]高于[" + LEGACY_SLIDER_MAX_VERSION + "]改用拼图/RDS 验证链路");
             return false;
         }
 
         return true;
+    }
+
+    /**
+     * @return 支付宝版本低于等于 10.6.58.99999 时走旧版滑动手势；否则走拼图/RDS 验证链路
+     */
+    private boolean isLegacySliderVersion() {
+        if (alipayVersion == null || alipayVersion.toString().isEmpty()) {
+            return false;
+        }
+        return alipayVersion.compareTo(new AlipayVersion(LEGACY_SLIDER_MAX_VERSION)) <= 0;
+    }
+
+    /**
+     * 安装验证类与账号限制相关 Hook。
+     * <p>旧版本（≤10.6.58.99999）沿用项目原有的 SimplePageManager + MotionEvent 滑动手势；
+     * 新版本走拼图/RDS 验证链路，命中后阻断原流程并直接返回结果。
+     * <p>拼图链路的每个回调都会实时检查开关，所以这里始终安装，
+     * 避免用户在进程启动后才打开开关时必须重启支付宝才生效。
+     */
+    private void installFeatureHooks() {
+        try {
+            if (isLegacySliderVersion()) {
+                // 旧版本沿用项目原有的滑动手势，受「自动处理滑动/拼图验证」开关控制
+                if (FeatureFlagStore.isSlideCaptchaEnabled()) {
+                    initSimplePageManager();
+                }
+            } else {
+                // 新版拼图 Hook 的每个回调都会实时检查开关，这里始终安装，
+                // 避免开关在进程启动之后才打开时必须重启支付宝才生效
+                PuzzleCaptchaHook.install(classLoader);
+                // 部分验证以 XRiverActivity 页面形式弹出（H5 滑动/拼图），不经过 RDS Dialog Hook，
+                // 这里同时注册页面处理器作为补充
+                registerPageCaptchaHandler();
+            }
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#安装滑动/拼图验证 Hook", t);
+        }
+        try {
+            // 自动切号也需要保护本地登录账号记录，否则超过 5 个会被账号管理页清理
+            if (FeatureFlagStore.isAccountListProtected()) {
+                AccountLimitHook.install(classLoader);
+            }
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#安装账号限制 Hook", t);
+        }
+    }
+
+    /**
+     * 注册 XRiver 页面的验证码处理器：高版本先用拼图方案（截图+缺口识别+拖动）自动过验证，
+     * 处理期间先让路，避免“滑动到底”把拼图拖坏；拼图失败后自动回调本地滑动逻辑。
+     */
+    private void registerPageCaptchaHandler() {
+        try {
+            enableWindowMonitoring(classLoader);
+            final Captcha1Handler legacy = new Captcha1Handler();
+            addHandler("com.alipay.mobile.nebulax.xriver.activity.XRiverActivity",
+                    (activity, root) -> {
+                        if (!FeatureFlagStore.isSlideCaptchaEnabled()) {
+                            return false;
+                        }
+                        if (PuzzleCaptchaSolver.isHandling()) {
+                            Log.i(TAG, "XRiver 拼图自动验证进行中，暂缓本地滑动");
+                            return true;
+                        }
+                        return legacy.handleActivity(activity, root);
+                    });
+        } catch (Throwable t) {
+            Log.printStackTrace(TAG + "#注册页面验证处理器失败", t);
+        }
     }
 
     // ----------------------------------------------------------------

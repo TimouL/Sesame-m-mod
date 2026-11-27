@@ -184,8 +184,35 @@ public class Log {
      */
     private static volatile String accountLabel = null;
 
+    /**
+     * 当前线程绑定的账号简称。
+     * <p>切号时全局 {@link #accountLabel} 会立刻变成新账号，而旧账号的线程要等到下一个检查点
+     * 才真正退出，这期间它的日志会被打成新账号——看上去就是「两个账号在处理同一个任务」。
+     * 任务线程起跑时把当时的账号简称快照进本字段，日志就始终归到它自己所属的账号。
+     */
+    private static final ThreadLocal<String> THREAD_ACCOUNT_LABEL = new ThreadLocal<>();
+
     public static void setAccountLabel(String label) {
         accountLabel = StringUtil.isEmpty(label) ? null : label;
+    }
+
+    /** 当前全局账号简称（切号后会立刻变成新账号） */
+    public static String getAccountLabel() {
+        return accountLabel;
+    }
+
+    /** 绑定当前线程的账号简称：任务线程起跑时调用，使本线程的日志不再受切号影响 */
+    public static void bindThreadAccountLabel(String label) {
+        if (StringUtil.isEmpty(label)) {
+            THREAD_ACCOUNT_LABEL.remove();
+        } else {
+            THREAD_ACCOUNT_LABEL.set(label);
+        }
+    }
+
+    /** 解绑当前线程的账号简称（任务线程收尾时调用） */
+    public static void unbindThreadAccountLabel() {
+        THREAD_ACCOUNT_LABEL.remove();
     }
 
     /**
@@ -195,7 +222,11 @@ public class Log {
      * <p>查看器按「时间 tag: 正文」解析，前缀会落在正文里，不影响解析。
      */
     private static String withUser(String msg) {
-        String label = accountLabel;
+        // 线程绑定优先：切号期间旧账号线程的日志仍归旧账号，不会被新账号"抢走"
+        String label = THREAD_ACCOUNT_LABEL.get();
+        if (label == null) {
+            label = accountLabel;
+        }
         return label == null ? msg : "[" + label + "]" + msg;
     }
 

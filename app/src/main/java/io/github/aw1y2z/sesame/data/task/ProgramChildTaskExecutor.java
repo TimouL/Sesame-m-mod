@@ -92,6 +92,12 @@ public class ProgramChildTaskExecutor implements ChildTaskExecutor {
         return true;
     }
 
+    @Override
+    public Boolean isUsable() {
+        // 线程池被 clearAllChildTask 关掉后 map 会清空，视为不可用，需要重建
+        return !groupChildTaskExecutorMap.isEmpty();
+    }
+
     private ThreadPoolExecutor getChildGroupThreadPool(String group) {
         ThreadPoolExecutor threadPoolExecutor = groupChildTaskExecutorMap.get(group);
         if (threadPoolExecutor != null) {

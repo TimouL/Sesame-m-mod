@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import io.github.aw1y2z.sesame.data.ConfigPreload
 import io.github.aw1y2z.sesame.data.ConfigV2
+import io.github.aw1y2z.sesame.data.GlobalConfigField
 import io.github.aw1y2z.sesame.data.Model
 import io.github.aw1y2z.sesame.data.ModelField
 import io.github.aw1y2z.sesame.data.ModelGroup
@@ -348,11 +349,18 @@ private fun buildFieldHits(query: String): List<FieldHit> {
 /**
  * 配置字段编辑项（原地展开编辑）。变更只调 setObjectValue() 写内存，落盘交给页面退出流程，
  * 否则每次拨开关、每次提交输入都要做一次全量序列化 + 写盘 + 备份检查。
+ *
+ * @param onGlobalChanged 全局字段（切号等）改动时的回调：这类字段的值已经即时写进公共配置文件，
+ *   不走账号配置的落盘流程，页面需要单独提示"已保存"。
  */
 @Composable
-fun FieldItem(field: ModelField<*>, onFieldChanged: (() -> Unit)? = null) {
+fun FieldItem(
+    field: ModelField<*>,
+    onFieldChanged: (() -> Unit)? = null,
+    onGlobalChanged: (() -> Unit)? = null
+) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        FieldItemBody(field, onFieldChanged)
+        FieldItemBody(field, onFieldChanged, onGlobalChanged)
         // 字段说明统一在这里渲染；BOOLEAN 的说明由 SwitchPreference(summary) 承载，不重复
         val description = field.description
         if (field.type != "BOOLEAN" && !description.isNullOrBlank()) {
@@ -367,11 +375,23 @@ fun FieldItem(field: ModelField<*>, onFieldChanged: (() -> Unit)? = null) {
 }
 
 @Composable
-private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = null) {
+private fun FieldItemBody(
+    field: ModelField<*>,
+    onFieldChanged: (() -> Unit)? = null,
+    onGlobalChanged: (() -> Unit)? = null
+) {
     // 用字段名唯一标识展开状态，避免 LazyColumn 复用导致错位
     val fieldKey = "${field.type}:${field.name}"
     var expanded by remember { mutableStateOf(false) }
     var expandedFieldKey by remember { mutableStateOf<String?>(null) }
+    // 全局字段（切号等）值存在公共配置文件里：改动即时落盘，不进账号配置
+    val globalField = field as? GlobalConfigField
+    // 全局字段改动：写公共文件 + 通知页面（账号配置的落盘流程看不到这类改动）
+    fun applyGlobal(value: Any?) {
+        globalField?.applyGlobalValue(value)
+        onGlobalChanged?.invoke()
+        onFieldChanged?.invoke()
+    }
     when {
         field.type == "BOOLEAN" -> {
             // 以字段编码为 key：行被复用/重排时不要沿用上一个字段的勾选状态
@@ -382,7 +402,7 @@ private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = 
                 checked = checked,
                 onCheckedChange = {
                     checked = it
-                    field.setObjectValue(it)
+                    if (globalField != null) applyGlobal(it) else field.setObjectValue(it)
                     onFieldChanged?.invoke()
                 }
             )
@@ -425,7 +445,11 @@ private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = 
                             val belowMin = lowerLimit != null && (parsed == null || parsed < lowerLimit)
                             val aboveMax = maxLimit != null && (parsed == null || parsed > maxLimit)
                             if (!belowMin && !aboveMax) {
-                                field.setConfigValue(parsed.toString())
+                                if (globalField != null) {
+                                    applyGlobal(parsed.toString())
+                                } else {
+                                    field.setConfigValue(parsed.toString())
+                                }
                                 onFieldChanged?.invoke()
                             }
                         },
@@ -455,7 +479,11 @@ private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = 
                         value = text,
                         onValueChange = {
                             text = it
-                            field.setObjectValue(it)
+                            if (globalField != null) {
+                                applyGlobal(it)
+                            } else {
+                                field.setObjectValue(it)
+                            }
                             onFieldChanged?.invoke()
                         },
                         label = "",
@@ -466,6 +494,18 @@ private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = 
 
         field.type == "READ_TEXT" || field.type == "URL_TEXT" -> {
             ArrowPreference(title = field.name ?: "", summary = field.configValue)
+        }
+
+        field.type == "ACCOUNT_LIST" -> {
+            // 账号顺序有专门的编辑页（上下移动 + 保存）
+            val context = LocalContext.current
+            ArrowPreference(
+                title = field.name ?: "",
+                summary = field.configValue,
+                onClick = {
+                    context.startActivity(Intent(context, MiuixAccountOrderActivity::class.java))
+                }
+            )
         }
 
         field.type in listOf("SELECT", "SELECT_ONE", "SELECT_AND_COUNT", "SELECT_AND_COUNT_ONE") -> {} // 由 GroupFieldsPage 处理
@@ -495,7 +535,12 @@ private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = 
                         value = text,
                         onValueChange = { input ->
                             text = input
-                            field.setObjectValue(input.lines().map { it.trim() }.filter { it.isNotEmpty() })
+                            val lines = input.lines().map { it.trim() }.filter { it.isNotEmpty() }
+                            if (globalField != null) {
+                                applyGlobal(lines)
+                            } else {
+                                field.setObjectValue(lines)
+                            }
                             onFieldChanged?.invoke()
                         },
                         label = "",
@@ -532,7 +577,11 @@ private fun FieldItemBody(field: ModelField<*>, onFieldChanged: (() -> Unit)? = 
                             selected = sel == index,
                             onClick = {
                                 sel = index
-                                field.setObjectValue(index)
+                                if (globalField != null) {
+                                    applyGlobal(index)
+                                } else {
+                                    field.setObjectValue(index)
+                                }
                                 onFieldChanged?.invoke()
                             }
                         )
