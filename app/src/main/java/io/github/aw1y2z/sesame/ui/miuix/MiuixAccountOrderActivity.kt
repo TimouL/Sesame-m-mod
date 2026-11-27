@@ -146,7 +146,7 @@ private fun formatClockTime(millis: Long): String =
     if (millis <= 0) "—" else SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
 
 @Composable
-private fun StatusRow(label: String, value: String) {
+private fun SwitchStatusRow(label: String, value: String) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -193,7 +193,7 @@ fun AccountSwitchStatusCard() {
     SmallTitle(text = "切号状态")
     CardColumn {
         if (!config.isAccountSwitchEnabled) {
-            StatusRow("状态", "自动切换登录账号未开启，在设置中开启后这里显示调度状态")
+            SwitchStatusRow("状态", "自动切换登录账号未开启，在设置中开启后这里显示调度状态")
         } else {
             val phaseText = when (state.statusPhase) {
                 "RUNNING" -> "运行中"
@@ -209,10 +209,10 @@ fun AccountSwitchStatusCard() {
                 ageSec <= 90 -> "（${ageSec} 秒前更新）"
                 else -> "（已 ${ageSec / 60} 分钟未更新，调度器可能未运行）"
             }
-            StatusRow("调度状态", phaseText + ageText)
-            StatusRow("当前账号", display(state.statusUid))
+            SwitchStatusRow("调度状态", phaseText + ageText)
+            SwitchStatusRow("当前账号", display(state.statusUid))
             if (state.statusNextUid.isNotEmpty()) {
-                StatusRow("下一目标", display(state.statusNextUid))
+                SwitchStatusRow("下一目标", display(state.statusNextUid))
             }
             val roundInterval = config.accountSwitchRoundIntervalMinutes
             if (state.holdEnteredAt > 0 && roundInterval > 0
@@ -220,11 +220,11 @@ fun AccountSwitchStatusCard() {
             ) {
                 val remain = state.holdEnteredAt + roundInterval * 60_000L - now
                 if (remain > 0) {
-                    StatusRow("轮次等待", "保持账号等待中，还剩约 ${(remain + 59_999) / 60_000} 分钟")
+                    SwitchStatusRow("轮次等待", "保持账号等待中，还剩约 ${(remain + 59_999) / 60_000} 分钟")
                 }
             }
             if (state.switchDisabledUntil > now) {
-                StatusRow("切号熔断", "连续失败熔断中，${formatClockTime(state.switchDisabledUntil)} 后恢复")
+                SwitchStatusRow("切号熔断", "连续失败熔断中，${formatClockTime(state.switchDisabledUntil)} 后恢复")
             }
             config.accountSwitchAccounts
                 .filter { state.isQuarantined(it.uid, now) }
@@ -235,7 +235,7 @@ fun AccountSwitchStatusCard() {
                         } else {
                             "连续切换失败，${formatClockTime(state.getQuarantinedUntil(account.uid))} 后解除"
                         }
-                    StatusRow("已隔离", "${account.displayName}（$reasonText）")
+                    SwitchStatusRow("已隔离", "${account.displayName}（$reasonText）")
                 }
             if (state.lastSwitchAt > 0) {
                 val resultText = when {
@@ -246,14 +246,14 @@ fun AccountSwitchStatusCard() {
                     state.lastSwitchResult.startsWith("failed") -> "失败"
                     else -> state.lastSwitchResult
                 }
-                StatusRow(
+                SwitchStatusRow(
                     "最近切换",
                     "${formatClockTime(state.lastSwitchAt)} " +
                         "${display(state.lastSwitchFrom)} → ${display(state.lastSwitchTo)}（$resultText）"
                 )
             }
             if (state.statusEvent.isNotEmpty()) {
-                StatusRow("最近事件", state.statusEvent)
+                SwitchStatusRow("最近事件", state.statusEvent)
             }
         }
     }
