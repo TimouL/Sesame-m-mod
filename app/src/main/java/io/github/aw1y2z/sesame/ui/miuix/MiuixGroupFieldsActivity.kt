@@ -406,8 +406,9 @@ private fun ExecSheetDialog(group: ModelGroup, onDismiss: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
 
     // 分组内所有模块的功能单元（模块未覆盖 getExecUnits 时为整模块一行）
+    // 注：getModelArray 是 Lombok 生成的，Kotlin 看不见，改走手写的 getModelList
     val units = remember(group) {
-        ModelTask.getModelArray().filterNotNull()
+        Model.getModelList().filterIsInstance<ModelTask>()
             .filter { it.getType() == io.github.aw1y2z.sesame.data.ModelType.TASK && it.getGroup() == group }
             .flatMap { it.getExecUnits() }
     }
@@ -458,8 +459,16 @@ private fun ExecSheetDialog(group: ModelGroup, onDismiss: () -> Unit) {
                 TextField(
                     value = query,
                     onValueChange = { query = it },
-                    placeholder = "搜索",
-                    modifier = Modifier.weight(1f)
+                    label = "",
+                    modifier = Modifier.weight(1f),
+                    leadingIcon = {
+                        Icon(
+                            imageVector = Icons.Filled.Search,
+                            contentDescription = "搜索",
+                            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(start = 12.dp)
+                        )
+                    }
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
