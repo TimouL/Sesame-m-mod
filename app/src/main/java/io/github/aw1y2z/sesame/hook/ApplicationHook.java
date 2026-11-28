@@ -1133,6 +1133,14 @@ public class ApplicationHook extends XposedModule {
     }
 
     private static void hookProbeRpc(final ClassLoader cl, final String proc) {
+        try {
+            hookProbeRpcInner(cl, proc);
+        } catch (Throwable t) {
+            writeProbeLog(proc, "probe rpc hook err: " + t);
+        }
+    }
+
+    private static void hookProbeRpcInner(final ClassLoader cl, final String proc) throws Throwable {
         XHelpers.findAndHookMethod("com.alibaba.ariver.commonability.network.rpc.RpcBridgeExtension", cl, "rpc",
                 String.class, boolean.class, boolean.class, String.class, cl.loadClass(ClassUtil.JSON_OBJECT_NAME),
                 String.class, cl.loadClass(ClassUtil.JSON_OBJECT_NAME), boolean.class, boolean.class, int.class,
