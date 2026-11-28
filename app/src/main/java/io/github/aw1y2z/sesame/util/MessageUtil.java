@@ -364,6 +364,7 @@ public class MessageUtil {
         BLACKLIST_LIST_TARGETS.put("AntMemberTaskList", new String[]{"AntMember", "会员任务"});
         BLACKLIST_LIST_TARGETS.put("AntMemberAdTaskList", new String[]{"AntMember", "会员广告任务"});
         BLACKLIST_LIST_TARGETS.put("MemberCreditSesameTaskList", new String[]{"AntMember", "会员芝麻信用任务芝麻粒"});
+        BLACKLIST_LIST_TARGETS.put("MagicBoxP2eTaskList", new String[]{"MagicBox", "魔盒赚现金任务"});
     }
 
     /**

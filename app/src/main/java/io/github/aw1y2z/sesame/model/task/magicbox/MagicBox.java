@@ -5,11 +5,18 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
+import io.github.aw1y2z.sesame.data.ConfigV2;
 import io.github.aw1y2z.sesame.data.ModelFields;
 import io.github.aw1y2z.sesame.data.ModelGroup;
 import io.github.aw1y2z.sesame.data.modelFieldExt.BooleanModelField;
+import io.github.aw1y2z.sesame.data.modelFieldExt.SelectModelField;
+import io.github.aw1y2z.sesame.entity.AlipayMagicBoxP2eTaskList;
+import io.github.aw1y2z.sesame.util.idMap.MagicBoxP2eTaskListMap;
 import io.github.aw1y2z.sesame.data.task.ExecContext;
 import io.github.aw1y2z.sesame.data.task.ExecUnit;
 import io.github.aw1y2z.sesame.data.task.ModelTask;
@@ -31,6 +38,9 @@ public class MagicBox extends ModelTask {
 
     private BooleanModelField gameCenterP2ESignIn;
     private BooleanModelField gameCenterP2ETask;
+    private BooleanModelField gameCenterP2EGameBrowse;
+    private BooleanModelField AutoMagicBoxP2eTaskList;
+    private SelectModelField MagicBoxP2eTaskList;
     private BooleanModelField chongyaSignIn;
 
     @Override
@@ -48,6 +58,9 @@ public class MagicBox extends ModelTask {
         ModelFields modelFields = new ModelFields();
         modelFields.addField(gameCenterP2ESignIn = new BooleanModelField("gameCenterP2ESignIn", "游戏中心 | 赚现金签到", false));
         modelFields.addField(gameCenterP2ETask = new BooleanModelField("gameCenterP2ETask", "游戏中心 | 赚现金任务", false));
+        modelFields.addField(gameCenterP2EGameBrowse = new BooleanModelField("gameCenterP2EGameBrowse", "游戏中心 | 赚现金游戏时长任务", true).setDependsOn("gameCenterP2ETask"));
+        modelFields.addField(AutoMagicBoxP2eTaskList = new BooleanModelField("AutoMagicBoxP2eTaskList", "游戏中心 | 赚现金自动黑名单", true).setDependsOn("gameCenterP2ETask"));
+        modelFields.addField(MagicBoxP2eTaskList = new SelectModelField("MagicBoxP2eTaskList", "游戏中心 | 赚现金黑名单列表", new LinkedHashSet<>(), AlipayMagicBoxP2eTaskList::getList).setDependsOn("AutoMagicBoxP2eTaskList"));
         modelFields.addField(chongyaSignIn = new BooleanModelField("chongyaSignIn", "冲鸭攒话费 | 签到", false));
         return modelFields;
     }
@@ -77,7 +90,7 @@ public class MagicBox extends ModelTask {
                 p2eCheckAndSignIn(ExecContext.isForce());
             }
             if (gameCenterP2ETask.getValue() && ExecContext.isSelected("gameCenterP2ETask")) {
-                p2eDoViewTasks(ExecContext.isForce());
+                p2eDoViewTasks(ExecContext.isForce(), gameCenterP2EGameBrowse.getValue(), AutoMagicBoxP2eTaskList.getValue());
             }
             if (chongyaSignIn.getValue() && ExecContext.isSelected("chongyaSignIn")) {
                 ChongYaSign.checkAndSignIn(ExecContext.isForce());
@@ -186,10 +199,11 @@ public class MagicBox extends ModelTask {
      * 手动在 App 里做完的任务不受影响，下一轮见 COMPLETED 照常领奖。
      * 样本存档（{@link #dumpTaskListSample}）保留，供后续核对字段变化。
      */
-    public static void p2eDoViewTasks(boolean force) {
+    public static void p2eDoViewTasks(boolean force, boolean gameBrowseEnabled, boolean autoBlackList) {
         try {
             String listResp = MagicBoxRpcCall.p2eQueryTaskList();
             dumpTaskListSample(listResp);
+            syncP2eTaskListMap(listResp, autoBlackList);
             JSONArray taskList = p2ePlatformTaskList(listResp);
             if (taskList == null) {
                 return;
@@ -205,14 +219,18 @@ public class MagicBox extends ModelTask {
                 }
                 String title = task.optString("title", taskId);
                 String status = task.optString("taskStatus", "");
-                //listField 传 null：游戏中心任务未在自动黑名单里登记列表，policy 只做标记与分级，不代拉黑
-                TaskAttemptPolicy.Site site = TaskAttemptPolicy.site(null, "赚现金任务",
+                //listField 已在 MessageUtil 登记（MagicBoxP2eTaskList）：policy 的自动黑名单记账生效
+                TaskAttemptPolicy.Site site = TaskAttemptPolicy.site("MagicBoxP2eTaskList", "赚现金任务",
                         p2eTaskType(task), null, MagicBox::probeP2eTask);
                 if ("COMPLETED".equals(status)) {
                     TaskAttemptPolicy.handle(P2E_KEY_PREFIX + taskId, title,
                             () -> p2eReceiveTask(task), null, Log::magicBox, site);
                 }
                 else if ("UN_SIGNUP".equals(status) || "SIGNUP_COMPLETED".equals(status)) {
+                    if (isP2eBlackListed(title)) {
+                        //黑名单只挡「做」不挡「领」：与农场一致，命中静默跳过
+                        continue;
+                    }
                     if ("SWITCH_APP_TASK".equals(task.optString("actionType", ""))) {
                         //跳外部 App 完成（如去快手）：回传接口管不到，当日跳过、次日再看
                         if (!Status.hasFlagToday("gameCenterP2eTaskTried::" + taskId)) {
@@ -235,7 +253,7 @@ public class MagicBox extends ModelTask {
                 }
                 //其余状态（领奖后残留等）不处理
             }
-            p2eDoGameTasks(listResp);
+            p2eDoGameTasks(listResp, gameBrowseEnabled);
         }
         catch (Throwable t) {
             Log.err(TAG, "p2eDoViewTasks err:", t);
@@ -254,7 +272,7 @@ public class MagicBox extends ModelTask {
      * 若服务端实际按游戏引擎上报计时，完成不会翻转，实验自动落空、无副作用（登记本身只是登记）。
      * 其余 GAME_TRAN_TASK / BONUS 是真实游戏进度（过关/订单/推图），不尝试。
      */
-    public static void p2eDoGameTasks(String listResp) {
+    public static void p2eDoGameTasks(String listResp, boolean gameBrowseEnabled) {
         try {
             JSONArray gameList = p2eGameTaskList(listResp);
             if (gameList == null) {
@@ -272,13 +290,14 @@ public class MagicBox extends ModelTask {
                 }
                 String title = task.optString("title", taskId);
                 String status = task.optString("taskStatus", "");
-                TaskAttemptPolicy.Site site = TaskAttemptPolicy.site(null, "赚现金游戏任务",
+                TaskAttemptPolicy.Site site = TaskAttemptPolicy.site("MagicBoxP2eTaskList", "赚现金游戏任务",
                         p2eTaskType(task), null, MagicBox::probeP2eGameTask);
                 if ("COMPLETED".equals(status)) {
                     TaskAttemptPolicy.handle(P2E_GAME_KEY_PREFIX + taskId, title,
                             () -> p2eReceiveTask(task, "玩一玩"), null, Log::magicBox, site);
                 }
-                else if (("SIGNUP_COMPLETED".equals(status) || "UN_SIGNUP".equals(status))
+                else if (gameBrowseEnabled && !isP2eBlackListed(title)
+                        && ("SIGNUP_COMPLETED".equals(status) || "UN_SIGNUP".equals(status))
                         && "GAME_BROWSE".equals(task.optString("actionType", ""))) {
                     TaskAttemptPolicy.handle(P2E_GAME_KEY_PREFIX + taskId, title,
                             null, () -> p2eAttemptGameBrowseTask(task, gameModuleId, status), Log::magicBox, site);
@@ -548,6 +567,72 @@ public class MagicBox extends ModelTask {
             Log.err(TAG, "p2ePlatformTaskList err:", t);
             return null;
         }
+    }
+
+    /**
+     * 每日一次把当日任务标题（平台 + 游戏两份列表）同步进 MagicBoxP2eTaskListMap，
+     * 供黑名单列表的选项来源（与农场 initAntFarmTaskListMap 同构，只是挂在任务运行路径上）；
+     * 自动黑名单开启时再把预置项同步进黑名单字段（本模块暂无预置项，登记表为空集）。
+     */
+    private static void syncP2eTaskListMap(String listResp, boolean autoBlackList) {
+        if (Status.hasFlagToday("gameCenterP2eTaskListMapSynced")) {
+            return;
+        }
+        try {
+            MagicBoxP2eTaskListMap.load();
+            JSONArray[] lists = {p2ePlatformTaskList(listResp), p2eGameTaskList(listResp)};
+            for (JSONArray list : lists) {
+                if (list == null) {
+                    continue;
+                }
+                for (int i = 0; i < list.length(); i++) {
+                    JSONObject task = list.optJSONObject(i);
+                    if (task == null) {
+                        continue;
+                    }
+                    String title = task.optString("title", "").trim();
+                    if (!title.isEmpty()) {
+                        MagicBoxP2eTaskListMap.add(title, title);
+                    }
+                }
+            }
+            MagicBoxP2eTaskListMap.save();
+            Status.flagToday("gameCenterP2eTaskListMapSynced");
+            if (autoBlackList) {
+                MessageUtil.syncTaskBlackList("魔盒赚现金任务", "MagicBoxP2eTaskList",
+                        MessageUtil.presetBlackList("MagicBox", "MagicBoxP2eTaskList"),
+                        new HashSet<>(), p2eBlackListField());
+            }
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "syncP2eTaskListMap err:", t);
+        }
+    }
+
+    /** 从 ConfigV2 取本模块的黑名单列表字段（静态执行路径没有模块实例，与农场 init 的取法一致） */
+    private static SelectModelField p2eBlackListField() {
+        try {
+            ModelFields fields = ConfigV2.INSTANCE.getModelFieldsMap().get("MagicBox");
+            if (fields == null) {
+                return null;
+            }
+            Object field = fields.get("MagicBoxP2eTaskList");
+            return field instanceof SelectModelField ? (SelectModelField) field : null;
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "p2eBlackListField err:", t);
+            return null;
+        }
+    }
+
+    /** 标题是否在用户/自动黑名单里（字段值即标题集合，与农场的判定方式一致） */
+    private static boolean isP2eBlackListed(String title) {
+        SelectModelField field = p2eBlackListField();
+        if (field == null) {
+            return false;
+        }
+        Set<String> values = field.getValue();
+        return values != null && values.contains(title);
     }
 
     /** 按 taskId 在平台任务列表里找任务 */

@@ -688,6 +688,10 @@ public class FileUtil {
         return getFile(MAIN_DIRECTORY_FILE, "AntFarmDrawMachineTask.json");
     }
 
+    public static File getMagicBoxP2eTaskListMapFile() {
+        return getFile(MAIN_DIRECTORY_FILE, "MagicBoxP2eTask.json");
+    }
+
     public static File getAntKitchenTaskListMapFile() {
         return getFile(MAIN_DIRECTORY_FILE, "AntKitchenTask.json");
     }
