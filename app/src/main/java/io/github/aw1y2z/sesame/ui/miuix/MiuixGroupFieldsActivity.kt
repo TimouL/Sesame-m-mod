@@ -451,7 +451,7 @@ private fun GroupFieldRow(
                     field = field,
                     onFieldChanged = onDependencyChanged,
                     onGlobalChanged = { activity.globalChanged = true },
-                    jumpAppId = FIELD_JUMP_APP_IDS[field.code],
+                    jumpUrl = FIELD_JUMP_URLS[field.code],
                     summaryOverride = statsSummary
                 )
             }

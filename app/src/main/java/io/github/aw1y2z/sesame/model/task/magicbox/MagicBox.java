@@ -257,9 +257,83 @@ public class MagicBox extends ModelTask {
                 //其余状态（领奖后残留等）不处理
             }
             p2eDoGameTasks(listResp, gameBrowseEnabled);
+            p2eSyncStatsFromServer();
         }
         catch (Throwable t) {
             Log.err(TAG, "p2eDoViewTasks err:", t);
+        }
+    }
+
+    /**
+     * 当日统计与服务器对齐：分页拉金币流水（最新在前），只取今日 FLOW_IN 并按文案分类——
+     * 「每日签到」计签到、「…浏览任务」计任务、「玩…秒」计游戏时长——扫全今日记录后整表覆盖本地累计；
+     * 中途失败/今日记录没扫全则保留本地累计不动（2026-11-28 抓包实证流水结构）。
+     */
+    private static void p2eSyncStatsFromServer() {
+        try {
+            String today = MagicBoxP2eStats.today();
+            boolean signInDone = false;
+            int signInCoins = 0;
+            int taskCoins = 0;
+            int gameCoins = 0;
+            boolean complete = false;
+            for (int page = 1; page <= 5 && !complete; page++) {
+                String resp = MagicBoxRpcCall.p2eQueryGoldRecord(page, 20);
+                if (resp == null || resp.isEmpty()) {
+                    return;
+                }
+                JSONObject jo = new JSONObject(resp);
+                if (!MessageUtil.checkSuccess(TAG, jo)) {
+                    return;
+                }
+                JSONObject data = jo.optJSONObject("data");
+                JSONArray records = data == null ? null : data.optJSONArray("goldRecords");
+                if (records == null) {
+                    return;
+                }
+                boolean stop = false;
+                for (int i = 0; i < records.length(); i++) {
+                    JSONObject record = records.optJSONObject(i);
+                    if (record == null) {
+                        continue;
+                    }
+                    String transTime = record.optString("transTime", "");
+                    String recordDate = transTime.length() >= 10 ? transTime.substring(0, 10) : "";
+                    if (recordDate.compareTo(today) < 0) {
+                        //已扫过今日全部记录
+                        stop = true;
+                        complete = true;
+                        break;
+                    }
+                    if (!recordDate.equals(today) || !"FLOW_IN".equals(record.optString("transType", ""))) {
+                        continue;
+                    }
+                    String desc = record.optString("desc", "");
+                    int amount = record.optInt("goldAmount", 0);
+                    if ("每日签到".equals(desc)) {
+                        signInDone = true;
+                        signInCoins += amount;
+                    }
+                    else if (desc.contains("浏览任务")) {
+                        taskCoins += amount;
+                    }
+                    else if (desc.startsWith("玩") && desc.contains("秒")) {
+                        gameCoins += amount;
+                    }
+                }
+                if (stop) {
+                    break;
+                }
+                if (data == null || !data.optBoolean("hasMore", false)) {
+                    complete = true;
+                }
+            }
+            if (complete) {
+                MagicBoxP2eStats.alignFromServer(signInDone, signInCoins, taskCoins, gameCoins);
+            }
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "p2eSyncStatsFromServer err:", t);
         }
     }
 

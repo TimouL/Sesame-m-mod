@@ -47,6 +47,14 @@ public class MagicBoxRpcCall {
     }
 
     /**
+     * 金币流水明细（分页，最新在前）：当日统计与服务器对齐用（2026-11-28 真机抓包实证）
+     */
+    public static String p2eQueryGoldRecord(int pageNum, int pageSize) {
+        return ApplicationHook.requestString("com.alipay.gamecenteruprod.biz.rpc.p2e.queryGoldRecord",
+                "[{\"pageNum\":" + pageNum + ",\"pageSize\":" + pageSize + "}]");
+    }
+
+    /**
      * 平台任务报名（UN_SIGNUP 时先报名）
      */
     public static String p2ePlatformTaskSignUp(String taskId, String taskToken) {

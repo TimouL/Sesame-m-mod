@@ -89,6 +89,11 @@ public class MagicBoxP2eStats {
         }
     }
 
+    /** 与服务器对齐：以服务器流水重算的今日数据整表覆盖（调用方须保证已扫全今日记录） */
+    public static synchronized void alignFromServer(boolean signInDone, int signInCoins, int taskCoins, int gameCoins) {
+        persist(new MagicBoxP2eStats(today(), signInDone, signInCoins, taskCoins, gameCoins));
+    }
+
     /** 更新前的当前值：不是今天的归零重开 */
     private static MagicBoxP2eStats freshForUpdate() {
         MagicBoxP2eStats cur = readFresh();

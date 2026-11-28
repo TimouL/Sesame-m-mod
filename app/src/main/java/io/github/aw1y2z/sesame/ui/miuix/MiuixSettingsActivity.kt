@@ -279,12 +279,12 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
                 CardColumn {
                     ModelGroup.values().forEach { g ->
                         if (Model.getGroupModelConfig(g).isNotEmpty()) {
-                            val jumpAppId = GROUP_JUMP_APP_IDS[g]
+                            val jumpUrl = GROUP_JUMP_URLS[g]
                             ArrowPreference(
                                 title = g.getName(),
                                 endActions = {
-                                    if (jumpAppId != null) {
-                                        JumpToAlipayIcon(context, jumpAppId)
+                                    if (jumpUrl != null) {
+                                        JumpToAlipayIcon(context, jumpUrl)
                                     }
                                 },
                                 onClick = {
@@ -325,30 +325,34 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
 private val SELECTION_FIELD_TYPES = setOf("SELECT", "SELECT_ONE", "SELECT_AND_COUNT", "SELECT_AND_COUNT_ONE")
 
 /**
- * 分组 → 支付宝对应小程序 appId（分组目录行内的跳转图标用）。
+ * 分组 → 支付宝跳转链接（分组目录行内的跳转图标用，值为完整的 alipays scheme）。
  * 森林/庄园/运动来自公开的支付宝 scheme 列表；
- * 没有明确对应页面、或 appId 未核实的分组不登记，行内不显示跳转图标。
+ * 没有明确对应页面、或链接未核实的分组不登记，行内不显示跳转图标。
  * 综合型分组（如魔盒）不在分组行挂跳转——它里面装着多个具体功能，
- * 跳转挂到功能字段行上（见 FIELD_JUMP_APP_IDS）。
+ * 跳转挂到功能字段行上（见 FIELD_JUMP_URLS）。
  */
-private val GROUP_JUMP_APP_IDS: Map<ModelGroup, String> = mapOf(
-    ModelGroup.FOREST to "60000002", // 蚂蚁森林
-    ModelGroup.PROTECT to "60000002", // 保护地入口在蚂蚁森林内
-    ModelGroup.FARM to "66666674", // 蚂蚁庄园
-    ModelGroup.SPORTS to "20000869", // 支付宝运动
+private val GROUP_JUMP_URLS: Map<ModelGroup, String> = mapOf(
+    ModelGroup.FOREST to "alipays://platformapi/startapp?appId=60000002", // 蚂蚁森林
+    ModelGroup.PROTECT to "alipays://platformapi/startapp?appId=60000002", // 保护地入口在蚂蚁森林内
+    ModelGroup.FARM to "alipays://platformapi/startapp?appId=66666674", // 蚂蚁庄园
+    ModelGroup.SPORTS to "alipays://platformapi/startapp?appId=20000869", // 支付宝运动
 )
 
-/** 字段编码 → 支付宝对应小程序 appId（功能字段行内的跳转图标用，appId 来自本模块抓包实测） */
-internal val FIELD_JUMP_APP_IDS: Map<String, String> = mapOf(
-    "gameCenterP2ESignIn" to "2021003125685383", // 魔盒·赚现金签到 → 游戏中心
-    "gameCenterP2ETask" to "2021003125685383", // 魔盒·赚现金任务 → 游戏中心
+/**
+ * 字段编码 → 支付宝跳转链接（功能字段行内的跳转图标用）。
+ * 赚现金是游戏中心里的 H5 子页：链接为服务器首页数据自带的 jumpUrl（2026-11-28 抓包实证，
+ * tab=p2e 直达赚现金页，而不是游戏中心首页）。
+ */
+internal val FIELD_JUMP_URLS: Map<String, String> = mapOf(
+    "gameCenterP2ESignIn" to "alipays://platformapi/startapp?appId=2021003125685383&url=https%3A%2F%2Frender.alipay.com%2Fp%2Fyuyan%2F180020010001206617%2Findex.html%3FcaprMode%3Dsync%26fullPlayToEarn%3Dtrue%26tab%3Dp2e&chInfo=yxzx_mc_xiutxz04&startMultApp=NO",
+    "gameCenterP2ETask" to "alipays://platformapi/startapp?appId=2021003125685383&url=https%3A%2F%2Frender.alipay.com%2Fp%2Fyuyan%2F180020010001206617%2Findex.html%3FcaprMode%3Dsync%26fullPlayToEarn%3Dtrue%26tab%3Dp2e&chInfo=yxzx_mc_xiutxz04&startMultApp=NO",
 )
 
-/** 用 scheme 打开支付宝内的小程序页（模块 App 进程直接发 Intent，支付宝未装/被拦时提示） */
-internal fun openAlipayApp(context: android.content.Context, appId: String) {
+/** 用 scheme 打开支付宝内的页面（模块 App 进程直接发 Intent，支付宝未装/被拦时提示） */
+internal fun openAlipayApp(context: android.content.Context, url: String) {
     try {
         context.startActivity(
-            Intent(Intent.ACTION_VIEW, Uri.parse("alipays://platformapi/startapp?appId=$appId"))
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         )
     } catch (t: Throwable) {
@@ -358,9 +362,9 @@ internal fun openAlipayApp(context: android.content.Context, appId: String) {
 
 /** 跳转图标按钮（分组行与字段行共用）：点击直达支付宝对应页面，不触发行本身的点击 */
 @Composable
-internal fun JumpToAlipayIcon(context: android.content.Context, appId: String) {
+internal fun JumpToAlipayIcon(context: android.content.Context, url: String) {
     Box(
-        modifier = Modifier.size(36.dp).clickable { openAlipayApp(context, appId) },
+        modifier = Modifier.size(36.dp).clickable { openAlipayApp(context, url) },
         contentAlignment = Alignment.Center
     ) {
         Icon(
@@ -418,11 +422,11 @@ fun FieldItem(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
     onGlobalChanged: (() -> Unit)? = null,
-    jumpAppId: String? = null,
+    jumpUrl: String? = null,
     summaryOverride: String? = null
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        FieldItemBody(field, onFieldChanged, onGlobalChanged, jumpAppId, summaryOverride)
+        FieldItemBody(field, onFieldChanged, onGlobalChanged, jumpUrl, summaryOverride)
         // 字段说明统一在这里渲染；BOOLEAN 的说明由 SwitchPreference(summary) 承载，不重复
         val description = field.description
         if (field.type != "BOOLEAN" && !description.isNullOrBlank()) {
@@ -441,7 +445,7 @@ private fun FieldItemBody(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
     onGlobalChanged: (() -> Unit)? = null,
-    jumpAppId: String? = null,
+    jumpUrl: String? = null,
     summaryOverride: String? = null
 ) {
     // 用字段名唯一标识展开状态，避免 LazyColumn 复用导致错位
@@ -466,8 +470,8 @@ private fun FieldItemBody(
                 summary = summaryOverride ?: field.description,
                 checked = checked,
                 endActions = {
-                    if (jumpAppId != null) {
-                        JumpToAlipayIcon(jumpContext, jumpAppId)
+                    if (jumpUrl != null) {
+                        JumpToAlipayIcon(jumpContext, jumpUrl)
                     }
                 },
                 onCheckedChange = {
