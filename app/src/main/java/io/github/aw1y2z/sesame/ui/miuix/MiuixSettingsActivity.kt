@@ -282,8 +282,8 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
                             val jumpAppId = GROUP_JUMP_APP_IDS[g]
                             ArrowPreference(
                                 title = g.getName(),
-                                endActions = if (jumpAppId != null) {
-                                    {
+                                endActions = {
+                                    if (jumpAppId != null) {
                                         // 跳转图标：点击直达支付宝内对应小程序，与行本身的点击（进设置）互不影响（仿 XRadiant）
                                         Box(
                                             modifier = Modifier.size(36.dp).clickable { openAlipayApp(context, jumpAppId) },
@@ -297,7 +297,7 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
                                             )
                                         }
                                     }
-                                } else null,
+                                },
                                 onClick = {
                                     activity.startActivity(
                                         Intent(activity, MiuixGroupFieldsActivity::class.java).apply {
