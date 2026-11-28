@@ -85,6 +85,29 @@ public class MagicBoxRpcCall {
     }
 
     /**
+     * 游戏浏览任务悬浮球登记：客户端打开目标游戏时先调它登记计时，参数 appId 为游戏中心本体、
+     * gameId / gameModuleId 取自任务列表（2026-11-28 抓包实证，几何王国 gameId=jhwg）；
+     * 响应 data.floatingBallVO.timeSeconds 为要求时长（几何王国 60 秒）。
+     * 完成判定是否由服务端自登记起计时未经证实，模块侧仅作实验性调用，结果以重拉列表复核为准。
+     */
+    public static String p2eFloatingBallConsult(String gameId, String gameModuleId) {
+        try {
+            JSONObject args = new JSONObject();
+            args.put("__git", "9e159d58cce04c13a");
+            args.put("appId", "2021003125685383");
+            args.put("gameId", gameId);
+            args.put("gameModuleId", gameModuleId);
+            args.put("p2eVersion", "");
+            args.put("source", "ch_appcenter__chsub_9patch");
+            args.put("trafficDriverId", "");
+            return ApplicationHook.requestString("com.alipay.gamecenteruprod.biz.rpc.p2e.gameP2eFloatingBallConsult",
+                    new JSONArray().put(args).toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * 领取平台任务奖励：响应 data.coinAmount 为到账金币数、receiveSuccess 为领取结果
      */
     public static String p2eGameTaskReceive(String taskId, String taskToken, String taskType) {

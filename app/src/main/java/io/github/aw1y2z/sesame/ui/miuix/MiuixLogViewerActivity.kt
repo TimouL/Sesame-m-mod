@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -636,11 +637,14 @@ fun LogEntryCard(entry: LogEntry) {
         }
         if (entry.body.isNotBlank()) {
             Spacer(Modifier.height(4.dp))
-            Text(
-                text = entry.body,
-                fontSize = 13.sp,
-                color = MiuixTheme.colorScheme.onBackground
-            )
+            // 正文可长按选择/复制：排查问题时能把原文带走，而不是只能截图
+            SelectionContainer {
+                Text(
+                    text = entry.body,
+                    fontSize = 13.sp,
+                    color = MiuixTheme.colorScheme.onBackground
+                )
+            }
         }
     }
 }
@@ -710,11 +714,13 @@ fun RunEntryCard(
                     append(e.body)
                 }
             }
-            Text(
-                text = text,
-                fontSize = 12.sp,
-                color = MiuixTheme.colorScheme.onBackground
-            )
+            SelectionContainer {
+                Text(
+                    text = text,
+                    fontSize = 12.sp,
+                    color = MiuixTheme.colorScheme.onBackground
+                )
+            }
         }
     }
 }

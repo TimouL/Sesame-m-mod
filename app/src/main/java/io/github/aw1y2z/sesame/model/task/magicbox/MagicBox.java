@@ -235,9 +235,159 @@ public class MagicBox extends ModelTask {
                 }
                 //其余状态（领奖后残留等）不处理
             }
+            p2eDoGameTasks(listResp);
         }
         catch (Throwable t) {
             Log.err(TAG, "p2eDoViewTasks err:", t);
+        }
+    }
+
+    /** 游戏任务在 TaskAttemptPolicy 里的定位键前缀，实际键为 {@code gameCenterP2eGame::<taskId>} */
+    private static final String P2E_GAME_KEY_PREFIX = "gameCenterP2eGame::";
+
+    /**
+     * 赚现金游戏任务（gameTaskList）：与平台任务分开处理——
+     * COMPLETED 的统一走领奖（领奖接口与平台任务共用 gameP2eTaskReceive，taskType 区分）；
+     * GAME_BROWSE（LIGHT_TRAN_TASK，如几何王国「玩60秒」）做实验性完成尝试：
+     * 悬浮球登记（gameP2eFloatingBallConsult，2026-11-28 抓包实证的客户端原生登记调用）
+     * → 按登记响应下发的时长等待 → policy 探针重拉列表复核，翻 COMPLETED 才算成、下一轮领奖。
+     * 若服务端实际按游戏引擎上报计时，完成不会翻转，实验自动落空、无副作用（登记本身只是登记）。
+     * 其余 GAME_TRAN_TASK / BONUS 是真实游戏进度（过关/订单/推图），不尝试。
+     */
+    public static void p2eDoGameTasks(String listResp) {
+        try {
+            JSONArray gameList = p2eGameTaskList(listResp);
+            if (gameList == null) {
+                return;
+            }
+            String gameModuleId = p2eGameModuleId(listResp);
+            for (int i = 0; i < gameList.length(); i++) {
+                JSONObject task = gameList.optJSONObject(i);
+                if (task == null) {
+                    continue;
+                }
+                String taskId = task.optString("taskId", "").trim();
+                if (taskId.isEmpty()) {
+                    continue;
+                }
+                String title = task.optString("title", taskId);
+                String status = task.optString("taskStatus", "");
+                TaskAttemptPolicy.Site site = TaskAttemptPolicy.site(null, "赚现金游戏任务",
+                        p2eTaskType(task), null, MagicBox::probeP2eGameTask);
+                if ("COMPLETED".equals(status)) {
+                    TaskAttemptPolicy.handle(P2E_GAME_KEY_PREFIX + taskId, title,
+                            () -> p2eReceiveTask(task, "玩一玩"), null, Log::magicBox, site);
+                }
+                else if (("SIGNUP_COMPLETED".equals(status) || "UN_SIGNUP".equals(status))
+                        && "GAME_BROWSE".equals(task.optString("actionType", ""))) {
+                    TaskAttemptPolicy.handle(P2E_GAME_KEY_PREFIX + taskId, title,
+                            null, () -> p2eAttemptGameBrowseTask(task, gameModuleId, status), Log::magicBox, site);
+                }
+                //其余游戏任务为真实进度型，不处理
+            }
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "p2eDoGameTasks err:", t);
+        }
+    }
+
+    /**
+     * 游戏浏览任务完成实验：登记悬浮球 → 等满登记响应下发的时长 → 返回 DONE 交 policy 探针复核。
+     * UN_SIGNUP 且任务要求报名时不试（游戏任务的报名接口未知）；登记被服务端明确拒绝返回 UNABLE。
+     */
+    private static TaskAttemptPolicy.Outcome p2eAttemptGameBrowseTask(JSONObject task, String gameModuleId, String statusAtList) {
+        String title = task.optString("title", task.optString("taskId", ""));
+        try {
+            if ("UN_SIGNUP".equals(statusAtList) && task.optBoolean("needSignUp", false)) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#未报名且报名接口未知，跳过（实验）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            String gameId = task.optString("gameId", "");
+            if (gameId.isEmpty() || gameModuleId == null || gameModuleId.isEmpty()) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#缺 gameId/gameModuleId，跳过（实验）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            String consultResp = MagicBoxRpcCall.p2eFloatingBallConsult(gameId, gameModuleId);
+            if (consultResp == null || consultResp.isEmpty()) {
+                return TaskAttemptPolicy.Outcome.RETRY;
+            }
+            JSONObject jo = new JSONObject(consultResp);
+            if (!MessageUtil.checkSuccess(TAG, jo)) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#悬浮球登记被拒（实验）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            int waitSeconds = 60;
+            JSONObject data = jo.optJSONObject("data");
+            JSONObject ball = data == null ? null : data.optJSONObject("floatingBallVO");
+            int s = ball == null ? 0 : ball.optInt("timeSeconds", 0);
+            if (s > 0 && s <= 300) {
+                waitSeconds = s;
+            }
+            Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已登记悬浮球，等待" + waitSeconds + "秒（实验）");
+            TimeUtil.sleep((waitSeconds + 1) * 1000L);
+            return TaskAttemptPolicy.Outcome.DONE;
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "p2eAttemptGameBrowseTask err:", t);
+            return TaskAttemptPolicy.Outcome.RETRY;
+        }
+    }
+
+    /** 游戏任务列表状态探针：重拉列表在 gameTaskList 里按 taskId 查状态，映射同平台探针 */
+    private static TaskAttemptPolicy.ProbeResult probeP2eGameTask(String key) {
+        String taskId = key.startsWith(P2E_GAME_KEY_PREFIX) ? key.substring(P2E_GAME_KEY_PREFIX.length()) : key;
+        try {
+            String resp = MagicBoxRpcCall.p2eQueryTaskList();
+            if (resp == null || resp.isEmpty()) {
+                return TaskAttemptPolicy.ProbeResult.UNKNOWN;
+            }
+            JSONArray list = p2eGameTaskList(resp);
+            if (list == null) {
+                return TaskAttemptPolicy.ProbeResult.UNKNOWN;
+            }
+            JSONObject task = findPlatformTaskById(list, taskId);
+            if (task == null) {
+                return TaskAttemptPolicy.ProbeResult.GONE;
+            }
+            return "COMPLETED".equals(task.optString("taskStatus", ""))
+                    ? TaskAttemptPolicy.ProbeResult.FINISHED : TaskAttemptPolicy.ProbeResult.TODO;
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "probeP2eGameTask err:", t);
+            return TaskAttemptPolicy.ProbeResult.UNKNOWN;
+        }
+    }
+
+    /** 从 queryTaskList 响应取 data.platformGameTaskModule.gameTaskList，异常返回 null，无模块返回空列表 */
+    private static JSONArray p2eGameTaskList(String resp) {
+        if (resp == null || resp.isEmpty()) {
+            return null;
+        }
+        try {
+            JSONObject data = new JSONObject(resp).optJSONObject("data");
+            JSONObject module = data == null ? null : data.optJSONObject("platformGameTaskModule");
+            JSONArray list = module == null ? null : module.optJSONArray("gameTaskList");
+            return list == null ? new JSONArray() : list;
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "p2eGameTaskList err:", t);
+            return null;
+        }
+    }
+
+    /** 从 queryTaskList 响应取 platformGameTaskModule.gameModuleId（悬浮球登记入参），取不到返回空串 */
+    private static String p2eGameModuleId(String resp) {
+        if (resp == null || resp.isEmpty()) {
+            return "";
+        }
+        try {
+            JSONObject data = new JSONObject(resp).optJSONObject("data");
+            JSONObject module = data == null ? null : data.optJSONObject("platformGameTaskModule");
+            return module == null ? "" : module.optString("gameModuleId", "");
+        }
+        catch (Throwable t) {
+            Log.err(TAG, "p2eGameModuleId err:", t);
+            return "";
         }
     }
 
@@ -352,6 +502,11 @@ public class MagicBox extends ModelTask {
 
     /** 领取单个平台任务奖励，成功返回 true */
     private static boolean p2eReceiveTask(JSONObject task) {
+        return p2eReceiveTask(task, "逛一逛");
+    }
+
+    /** 领取单个任务奖励（平台/游戏共用同一领奖接口，kind 只区分日志措辞），成功返回 true */
+    private static boolean p2eReceiveTask(JSONObject task, String kind) {
         String taskId = task.optString("taskId", "").trim();
         String title = task.optString("title", taskId);
         try {
@@ -366,10 +521,10 @@ public class MagicBox extends ModelTask {
             }
             JSONObject data = jo.optJSONObject("data");
             if (data != null && data.optBoolean("receiveSuccess", false)) {
-                Log.magicBox("游戏中心🪙逛一逛[" + title + "]#获得[" + data.optInt("coinAmount", 0) + "金币]");
+                Log.magicBox("游戏中心🪙" + kind + "[" + title + "]#获得[" + data.optInt("coinAmount", 0) + "金币]");
                 return true;
             }
-            Log.magicBox("游戏中心🪙逛一逛[" + title + "]#领取未确认");
+            Log.magicBox("游戏中心🪙" + kind + "[" + title + "]#领取未确认");
             return false;
         }
         catch (Throwable t) {

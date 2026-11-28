@@ -57,6 +57,7 @@ public class AppConfig {
     private Boolean newRpc = true;
     private Boolean showToast = true;
     private Integer toastOffsetY = 0;
+    private String toastPrefix = "";
     private Boolean enableOnGoing = false;
     private Boolean closeCaptchaDialog = true;
 
@@ -92,6 +93,14 @@ public class AppConfig {
 
     public void setToastOffsetY(Integer value) {
         toastOffsetY = value;
+    }
+
+    public String getToastPrefix() {
+        return toastPrefix;
+    }
+
+    public void setToastPrefix(String value) {
+        toastPrefix = value;
     }
 
     public Boolean getEnableOnGoing() {

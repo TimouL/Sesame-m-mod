@@ -1031,6 +1031,29 @@ fun ConfigTab(activity: MiuixMainActivity) {
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
+        // 气泡消息前缀：多开同类模块时给气泡加个标记区分来源，输入即保存
+        var toastPrefix by remember { mutableStateOf(AppConfig.INSTANCE.toastPrefix ?: "") }
+        var prefixExpanded by remember { mutableStateOf(false) }
+        ArrowPreference(
+            title = "气泡消息前缀",
+            summary = if (toastPrefix.isEmpty()) "未设置" else "当前前缀：$toastPrefix",
+            onClick = { prefixExpanded = !prefixExpanded }
+        )
+        if (prefixExpanded) {
+            top.yukonga.miuix.kmp.basic.TextField(
+                value = toastPrefix,
+                onValueChange = { text ->
+                    toastPrefix = text
+                    AppConfig.INSTANCE.toastPrefix = text
+                    AppConfig.save()
+                    activity.broadcastReloadConfig()
+                },
+                label = "",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
         var enableOnGoing by remember { mutableStateOf(AppConfig.INSTANCE.enableOnGoing ?: false) }
         BooleanSwitch("开启状态栏禁删", enableOnGoing) {
             AppConfig.INSTANCE.enableOnGoing = it
