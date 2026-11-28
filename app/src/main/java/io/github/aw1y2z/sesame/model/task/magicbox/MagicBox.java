@@ -421,12 +421,46 @@ public class MagicBox extends ModelTask {
             }
             Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已登记悬浮球，等待" + waitSeconds + "秒（实验）");
             TimeUtil.sleep((waitSeconds + 1) * 1000L);
+            //实验二：登记+等待已被证实不够——服务器认的是游戏引擎的时长上报，
+            //这里代发一条 submitUserPlayDurationAction（参数与引擎实发一致，拆包实证），再由探针复核
+            String gameAppId = task.optString("appId", "");
+            if (gameAppId.isEmpty()) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#缺 appId，无法上报时长（实验二）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            String reportResp = MagicBoxRpcCall.p2eSubmitPlayDuration(
+                    chInfoOf(task.optString("jumpLink", "")), waitSeconds, gameAppId);
+            if (reportResp == null || reportResp.isEmpty()) {
+                return TaskAttemptPolicy.Outcome.RETRY;
+            }
+            JSONObject reportJo = new JSONObject(reportResp);
+            if (!MessageUtil.checkSuccess(TAG, reportJo)) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#时长上报被拒（实验二）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已上报游玩时长" + waitSeconds + "秒（实验二）");
             return TaskAttemptPolicy.Outcome.DONE;
         }
         catch (Throwable t) {
             Log.err(TAG, "p2eAttemptGameBrowseTask err:", t);
             return TaskAttemptPolicy.Outcome.RETRY;
         }
+    }
+
+    /** 从任务 jumpLink 里取 chInfo（游戏以任务入口渠道启动时引擎上报时长的 source）；取不到用游戏中心默认渠道 */
+    private static String chInfoOf(String jumpLink) {
+        if (jumpLink != null) {
+            int i = jumpLink.indexOf("chInfo=");
+            if (i >= 0) {
+                String rest = jumpLink.substring(i + "chInfo=".length());
+                int amp = rest.indexOf('&');
+                String value = (amp >= 0 ? rest.substring(0, amp) : rest).trim();
+                if (!value.isEmpty()) {
+                    return value;
+                }
+            }
+        }
+        return "ch_appcenter__chsub_9patch";
     }
 
     /** 游戏任务列表状态探针：重拉列表在 gameTaskList 里按 taskId 查状态，映射同平台探针 */

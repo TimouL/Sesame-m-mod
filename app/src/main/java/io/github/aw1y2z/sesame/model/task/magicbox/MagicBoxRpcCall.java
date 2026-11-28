@@ -55,6 +55,26 @@ public class MagicBoxRpcCall {
     }
 
     /**
+     * 上报游玩时长：游戏引擎 paladinx 的通用统计接口（2026-11-28 拆引擎包实证）——
+     * 引擎在游戏进程里每约 30 秒及暂停时以 {source:chInfo, playTime:秒, gameAppId, statisticTag} 上报，
+     * statisticTag 取自游戏启动 query、默认空；服务器据此与悬浮球登记对号。
+     * 模块在登记并等待满要求时长后代发一条，模拟真玩满时长（实验二）。
+     */
+    public static String p2eSubmitPlayDuration(String source, int playTime, String gameAppId) {
+        try {
+            JSONObject args = new JSONObject();
+            args.put("source", source);
+            args.put("playTime", playTime);
+            args.put("gameAppId", gameAppId);
+            args.put("statisticTag", "");
+            return ApplicationHook.requestString("com.alipay.gamecenteruprod.biz.rpc.v3.submitUserPlayDurationAction",
+                    new JSONArray().put(args).toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * 平台任务报名（UN_SIGNUP 时先报名）
      */
     public static String p2ePlatformTaskSignUp(String taskId, String taskToken) {
