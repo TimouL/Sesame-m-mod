@@ -2,6 +2,7 @@ package io.github.aw1y2z.sesame.ui.miuix
 
 import android.content.Intent
 import io.github.aw1y2z.sesame.ui.HostBridge
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -18,6 +19,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -26,6 +28,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -276,14 +279,34 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
                 CardColumn {
                     ModelGroup.values().forEach { g ->
                         if (Model.getGroupModelConfig(g).isNotEmpty()) {
-                            ArrowPreference(title = g.getName(), onClick = {
-                                activity.startActivity(
-                                    Intent(activity, MiuixGroupFieldsActivity::class.java).apply {
-                                        putExtra(MiuixGroupFieldsActivity.EXTRA_USER_ID, userId)
-                                        putExtra(MiuixGroupFieldsActivity.EXTRA_GROUP_CODE, g.name)
+                            val jumpAppId = GROUP_JUMP_APP_IDS[g]
+                            ArrowPreference(
+                                title = g.getName(),
+                                endActions = if (jumpAppId != null) {
+                                    {
+                                        // 跳转图标：点击直达支付宝内对应小程序，与行本身的点击（进设置）互不影响（仿 XRadiant）
+                                        Box(
+                                            modifier = Modifier.size(36.dp).clickable { openAlipayApp(context, jumpAppId) },
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Filled.OpenInNew,
+                                                contentDescription = "在支付宝中打开",
+                                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                                                modifier = Modifier.size(19.dp)
+                                            )
+                                        }
                                     }
-                                )
-                            })
+                                } else null,
+                                onClick = {
+                                    activity.startActivity(
+                                        Intent(activity, MiuixGroupFieldsActivity::class.java).apply {
+                                            putExtra(MiuixGroupFieldsActivity.EXTRA_USER_ID, userId)
+                                            putExtra(MiuixGroupFieldsActivity.EXTRA_GROUP_CODE, g.name)
+                                        }
+                                    )
+                                }
+                            )
                         }
                     }
                 }
@@ -311,6 +334,31 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
 
 /** 可在四级页编辑的字段类型（与三级页的分派保持一致） */
 private val SELECTION_FIELD_TYPES = setOf("SELECT", "SELECT_ONE", "SELECT_AND_COUNT", "SELECT_AND_COUNT_ONE")
+
+/**
+ * 分组 → 支付宝对应小程序 appId（分组目录行内的跳转图标用）。
+ * 森林/庄园/运动来自公开的支付宝 scheme 列表，游戏中心来自本模块抓包实测；
+ * 没有明确对应页面、或 appId 未核实的分组不登记，行内不显示跳转图标。
+ */
+private val GROUP_JUMP_APP_IDS: Map<ModelGroup, String> = mapOf(
+    ModelGroup.FOREST to "60000002", // 蚂蚁森林
+    ModelGroup.PROTECT to "60000002", // 保护地入口在蚂蚁森林内
+    ModelGroup.FARM to "66666674", // 蚂蚁庄园
+    ModelGroup.SPORTS to "20000869", // 支付宝运动
+    ModelGroup.MAGIC_BOX to "2021003125685383", // 游戏中心
+)
+
+/** 用 scheme 打开支付宝内的小程序页（模块 App 进程直接发 Intent，支付宝未装/被拦时提示） */
+private fun openAlipayApp(context: android.content.Context, appId: String) {
+    try {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse("alipays://platformapi/startapp?appId=$appId"))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    } catch (t: Throwable) {
+        ToastUtil.show(context, "无法打开支付宝")
+    }
+}
 
 /** 一条搜索命中：字段本身 + 它所属的分组与模型（跳转与展示都需要） */
 internal data class FieldHit(
