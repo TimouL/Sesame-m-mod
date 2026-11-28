@@ -375,6 +375,13 @@ public class ApplicationHook extends XposedModule {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
         // 先提取进程名并赋值给全局变量
         processName = lpparam.processName; // 新增：将 Xposed 提供的进程名赋值给全局变量
+        // 【临时探针】lite 进程（小程序/游戏）只装游戏相关 RPC 记录钩子，抓主进程看不见的真实调用链；
+        // 诊断完成后本分支整体移除
+        if (ClassUtil.PACKAGE_NAME.equals(lpparam.packageName) && lpparam.processName != null
+                && lpparam.processName.startsWith(ClassUtil.PACKAGE_NAME + ":lite")) {
+            installLiteProbe(lpparam);
+            return;
+        }
         if (ClassUtil.PACKAGE_NAME.equals(lpparam.packageName) && ClassUtil.PACKAGE_NAME.equals(lpparam.processName)) {
             // 提前在锁内落标志：onPackageReady 与旧回调 handleLoadPackage 可能并发/重复触发，
             // 旧写法在方法末尾才置位，竞态下会重复执行整套 hook 与初始化
@@ -1095,6 +1102,108 @@ public class ApplicationHook extends XposedModule {
      * 安装抓包钩子（请求 + 返回各一个），开关为「抓包记录」。
      * <p>老接口没有 RpcBridgeExtension.rpc，故要求「使用新接口」开着；重复调用不叠加 hook。
      */
+    // ------------------------------------------------------------------
+    // 【临时探针】lite 进程 RPC 记录：只记游戏相关接口，写 probe.<日期>.log
+    // ------------------------------------------------------------------
+
+    private static final Map<Object, Object[]> probeHookMap = new ConcurrentHashMap<>();
+    private static volatile boolean probeInstalled = false;
+
+    private static void installLiteProbe(XC_LoadPackage.LoadPackageParam lpparam) {
+        if (probeInstalled) {
+            return;
+        }
+        probeInstalled = true;
+        final ClassLoader cl = lpparam.classLoader;
+        final String proc = lpparam.processName;
+        try {
+            XHelpers.findAndHookMethod(Application.class, "attach", Context.class, new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        hookProbeRpc(cl, proc);
+                    } catch (Throwable t) {
+                        writeProbeLog(proc, "probe install err: " + t);
+                    }
+                }
+            });
+        } catch (Throwable t) {
+            writeProbeLog(proc, "probe attach hook err: " + t);
+        }
+    }
+
+    private static void hookProbeRpc(final ClassLoader cl, final String proc) {
+        XHelpers.findAndHookMethod("com.alibaba.ariver.commonability.network.rpc.RpcBridgeExtension", cl, "rpc",
+                String.class, boolean.class, boolean.class, String.class, cl.loadClass(ClassUtil.JSON_OBJECT_NAME),
+                String.class, cl.loadClass(ClassUtil.JSON_OBJECT_NAME), boolean.class, boolean.class, int.class,
+                boolean.class, String.class, cl.loadClass("com.alibaba.ariver.app.api.App"),
+                cl.loadClass("com.alibaba.ariver.app.api.Page"),
+                cl.loadClass("com.alibaba.ariver.engine.api.bridge.model.ApiContext"),
+                cl.loadClass("com.alibaba.ariver.engine.api.bridge.extension.BridgeCallback"), new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        String op = String.valueOf(param.args[0]);
+                        if (!isProbeTarget(op)) {
+                            return;
+                        }
+                        Object[] record = new Object[5];
+                        record[0] = System.currentTimeMillis();
+                        record[1] = op;
+                        record[2] = String.valueOf(param.args[4]);
+                        String appInfo = "?";
+                        try {
+                            Object app = param.args[12];
+                            if (app != null) {
+                                Object id = XHelpers.callMethod(app, "getAppId");
+                                appInfo = app.getClass().getName() + "/" + id;
+                            }
+                        } catch (Throwable ignored) {
+                        }
+                        record[3] = appInfo;
+                        probeHookMap.put(param.args[15], record);
+                    }
+
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) {
+                        Object[] record = probeHookMap.remove(param.args[15]);
+                        if (record != null) {
+                            writeProbeLog(proc, "记录\n时间: " + record[0] + "\n方法: " + record[1]
+                                    + "\n调用方: " + record[3] + "\n参数: " + record[2] + "\n数据: " + record[4] + "\n");
+                        }
+                    }
+                });
+        try {
+            XHelpers.findAndHookMethod("com.alibaba.ariver.engine.common.bridge.internal.DefaultBridgeCallback", cl,
+                    "sendJSONResponse", cl.loadClass(ClassUtil.JSON_OBJECT_NAME), new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            Object[] record = probeHookMap.get(param.thisObject);
+                            if (record != null) {
+                                record[4] = String.valueOf(param.args[0]);
+                            }
+                        }
+                    });
+        } catch (Throwable ignored) {
+        }
+        writeProbeLog(proc, "probe installed");
+    }
+
+    private static boolean isProbeTarget(String op) {
+        return op != null && (op.contains("gamecenteruprod") || op.contains("gameevent")
+                || op.contains("FloatingBall") || op.contains("noticeGame"));
+    }
+
+    private static synchronized void writeProbeLog(String proc, String text) {
+        try {
+            String date = new SimpleDateFormat("yyyy-MM-dd", Locale.CHINA).format(Calendar.getInstance().getTime());
+            java.io.File file = new java.io.File(FileUtil.LOG_DIRECTORY_FILE, "probe." + date + ".log");
+            java.io.FileWriter writer = new java.io.FileWriter(file, true);
+            writer.write("[" + proc + "] " + text + "\n");
+            writer.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
     private static synchronized void installRpcRecordHook() {
         if (!AppConfig.INSTANCE.getEnableDebugLog()) {
             return;
