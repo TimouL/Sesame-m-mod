@@ -65,6 +65,26 @@ public class MagicBoxRpcCall {
     }
 
     /**
+     * 平台任务完成回传：参数与报名同构（actionChannel/activityId/source/taskId/taskToken）。
+     * 2026-11-28 真机抓包实证：客户端悬浮球计时结束后正是调这个接口完成浏览任务，
+     * 响应 {"success":true}，随后任务在列表里翻为 COMPLETED。
+     */
+    public static String p2ePlatformTaskComplete(String taskId, String taskToken) {
+        try {
+            JSONObject args = new JSONObject();
+            args.put("actionChannel", "taskList");
+            args.put("activityId", "P2E_PLATFORM_TASK");
+            args.put("source", "ch_appcenter__chsub_9patch");
+            args.put("taskId", taskId);
+            args.put("taskToken", taskToken);
+            return ApplicationHook.requestString("com.alipay.gamecenteruprod.biz.rpc.platformTaskComplete",
+                    new JSONArray().put(args).toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * 领取平台任务奖励：响应 data.coinAmount 为到账金币数、receiveSuccess 为领取结果
      */
     public static String p2eGameTaskReceive(String taskId, String taskToken, String taskType) {

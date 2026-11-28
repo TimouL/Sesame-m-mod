@@ -180,10 +180,11 @@ public class MagicBox extends ModelTask {
      * 完成与领奖一律以重拉列表的探针复核为准，不信任动作响应；
      * 当日只试一次、临时故障有限重试、交易类不申报都由 policy 管，本方法不再自设当日标记。
      * <p>注意：{@code force} 只表示「立即跑一轮」，尝试节奏由 policy 的当日标记治理，强制执行不绕过。
-     * <p>完成尝试（Attempt）目前只做到（按需）报名 + 悬浮球时长停留：2026-11-28 实测样本已确认
-     * 浏览的完成判定靠打开任务自带 jumpLink 后目标小程序的回传，跳转实现接入前，
-     * 探针复核不过的任务按 UNABLE 当日停试，次日再看——手动在 App 里做完的任务不受影响，
-     * 下一轮见 COMPLETED 照常领奖。样本存档（{@link #dumpTaskListSample}）保留，供后续核对字段变化。
+     * <p>完成尝试（Attempt）：（按需）报名 → 按悬浮球时长停留 → platformTaskComplete 回传
+     * （2026-11-28 真机抓包实证的客户端原生完成接口，与报名同构参数，后台直调、探针复核）。
+     * 跳外部 App 的 SWITCH_APP_TASK 不回传（完成判定在外部 App 内），当日跳过；
+     * 手动在 App 里做完的任务不受影响，下一轮见 COMPLETED 照常领奖。
+     * 样本存档（{@link #dumpTaskListSample}）保留，供后续核对字段变化。
      */
     public static void p2eDoViewTasks(boolean force) {
         try {
@@ -212,6 +213,14 @@ public class MagicBox extends ModelTask {
                             () -> p2eReceiveTask(task), null, Log::magicBox, site);
                 }
                 else if ("UN_SIGNUP".equals(status) || "SIGNUP_COMPLETED".equals(status)) {
+                    if ("SWITCH_APP_TASK".equals(task.optString("actionType", ""))) {
+                        //跳外部 App 完成（如去快手）：回传接口管不到，当日跳过、次日再看
+                        if (!Status.hasFlagToday("gameCenterP2eTaskTried::" + taskId)) {
+                            Status.flagToday("gameCenterP2eTaskTried::" + taskId);
+                            Log.magicBox("游戏中心🪙逛一逛[" + title + "]#需跳外部App，跳过");
+                        }
+                        continue;
+                    }
                     if (isTransactionTitle(title)) {
                         //policy 的交易识别只认 taskType 里的拼音关键词，中文标题在这里兜一层：永不报名
                         if (!Status.hasFlagToday("gameCenterP2eTaskTried::" + taskId)) {
@@ -236,9 +245,10 @@ public class MagicBox extends ModelTask {
      * AntSports 的既有约定一致，字段可能缺失故用 optBoolean 兜底；2026-11-28 实测样本里
      * 10 条平台任务 needSignUp 全为 false，即正常情况下不报名、直接走完成动作）。
      * 报名失败按临时故障 RETRY（policy 当日最多再试 3 次，不再像旧逻辑那样失败一次烧掉一整天）；
-     * 报名后（或本就已报名）按任务下发的 floatingBall.timeSeconds 停留一次。
-     * 真正的完成动作（打开 jumpLink 真实浏览）接入前统一返回 UNABLE——
-     * policy 仍会重拉列表探一次，真完成了照样认账，未完成则当日停试、次日再看。
+     * 报名后（或本就已报名）先按任务下发的 floatingBall.timeSeconds 停留（模拟悬浮球计时，
+     * 服务端可能按报名/曝光后的间隔校验），再调 platformTaskComplete 回传完成——
+     * 该接口与参数系 2026-11-28 真机抓包实证（客户端悬浮球走完后原样调用，响应 success）。
+     * 回传被服务端明确拒绝返回 UNABLE（policy 探一次认账/停试），网络级失败返回 RETRY。
      */
     private static TaskAttemptPolicy.Outcome p2eAttemptPlatformTask(JSONObject task, String statusAtList) {
         String taskId = task.optString("taskId", "").trim();
@@ -260,7 +270,15 @@ public class MagicBox extends ModelTask {
                 }
                 TimeUtil.sleep((waitSeconds + 1) * 1000L);
             }
-            return TaskAttemptPolicy.Outcome.UNABLE;
+            String completeResp = MagicBoxRpcCall.p2ePlatformTaskComplete(taskId, task.optString("taskToken", ""));
+            if (completeResp == null || completeResp.isEmpty()) {
+                return TaskAttemptPolicy.Outcome.RETRY;
+            }
+            if (!MessageUtil.checkSuccess(TAG, new JSONObject(completeResp))) {
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            Log.magicBox("游戏中心🪙逛一逛[" + title + "]#已回传完成");
+            return TaskAttemptPolicy.Outcome.DONE;
         }
         catch (Throwable t) {
             Log.err(TAG, "p2eAttemptPlatformTask err:", t);
