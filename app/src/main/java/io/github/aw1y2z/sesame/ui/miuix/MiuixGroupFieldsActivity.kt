@@ -425,7 +425,8 @@ private fun GroupFieldRow(
                 FieldItem(
                     field = field,
                     onFieldChanged = onDependencyChanged,
-                    onGlobalChanged = { activity.globalChanged = true }
+                    onGlobalChanged = { activity.globalChanged = true },
+                    jumpAppId = FIELD_JUMP_APP_IDS[field.code]
                 )
             }
         }

@@ -284,18 +284,7 @@ fun SettingsContent(activity: MiuixSettingsActivity, userId: String?) {
                                 title = g.getName(),
                                 endActions = {
                                     if (jumpAppId != null) {
-                                        // 跳转图标：点击直达支付宝内对应小程序，与行本身的点击（进设置）互不影响（仿 XRadiant）
-                                        Box(
-                                            modifier = Modifier.size(36.dp).clickable { openAlipayApp(context, jumpAppId) },
-                                            contentAlignment = Alignment.Center
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Filled.OpenInNew,
-                                                contentDescription = "在支付宝中打开",
-                                                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                                modifier = Modifier.size(19.dp)
-                                            )
-                                        }
+                                        JumpToAlipayIcon(context, jumpAppId)
                                     }
                                 },
                                 onClick = {
@@ -337,19 +326,26 @@ private val SELECTION_FIELD_TYPES = setOf("SELECT", "SELECT_ONE", "SELECT_AND_CO
 
 /**
  * 分组 → 支付宝对应小程序 appId（分组目录行内的跳转图标用）。
- * 森林/庄园/运动来自公开的支付宝 scheme 列表，游戏中心来自本模块抓包实测；
+ * 森林/庄园/运动来自公开的支付宝 scheme 列表；
  * 没有明确对应页面、或 appId 未核实的分组不登记，行内不显示跳转图标。
+ * 综合型分组（如魔盒）不在分组行挂跳转——它里面装着多个具体功能，
+ * 跳转挂到功能字段行上（见 FIELD_JUMP_APP_IDS）。
  */
 private val GROUP_JUMP_APP_IDS: Map<ModelGroup, String> = mapOf(
     ModelGroup.FOREST to "60000002", // 蚂蚁森林
     ModelGroup.PROTECT to "60000002", // 保护地入口在蚂蚁森林内
     ModelGroup.FARM to "66666674", // 蚂蚁庄园
     ModelGroup.SPORTS to "20000869", // 支付宝运动
-    ModelGroup.MAGIC_BOX to "2021003125685383", // 游戏中心
+)
+
+/** 字段编码 → 支付宝对应小程序 appId（功能字段行内的跳转图标用，appId 来自本模块抓包实测） */
+internal val FIELD_JUMP_APP_IDS: Map<String, String> = mapOf(
+    "gameCenterP2ESignIn" to "2021003125685383", // 魔盒·赚现金签到 → 游戏中心
+    "gameCenterP2ETask" to "2021003125685383", // 魔盒·赚现金任务 → 游戏中心
 )
 
 /** 用 scheme 打开支付宝内的小程序页（模块 App 进程直接发 Intent，支付宝未装/被拦时提示） */
-private fun openAlipayApp(context: android.content.Context, appId: String) {
+internal fun openAlipayApp(context: android.content.Context, appId: String) {
     try {
         context.startActivity(
             Intent(Intent.ACTION_VIEW, Uri.parse("alipays://platformapi/startapp?appId=$appId"))
@@ -357,6 +353,22 @@ private fun openAlipayApp(context: android.content.Context, appId: String) {
         )
     } catch (t: Throwable) {
         ToastUtil.show(context, "无法打开支付宝")
+    }
+}
+
+/** 跳转图标按钮（分组行与字段行共用）：点击直达支付宝对应页面，不触发行本身的点击 */
+@Composable
+internal fun JumpToAlipayIcon(context: android.content.Context, appId: String) {
+    Box(
+        modifier = Modifier.size(36.dp).clickable { openAlipayApp(context, appId) },
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = Icons.Filled.OpenInNew,
+            contentDescription = "在支付宝中打开",
+            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            modifier = Modifier.size(19.dp)
+        )
     }
 }
 
@@ -405,10 +417,11 @@ private fun buildFieldHits(query: String): List<FieldHit> {
 fun FieldItem(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
-    onGlobalChanged: (() -> Unit)? = null
+    onGlobalChanged: (() -> Unit)? = null,
+    jumpAppId: String? = null
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        FieldItemBody(field, onFieldChanged, onGlobalChanged)
+        FieldItemBody(field, onFieldChanged, onGlobalChanged, jumpAppId)
         // 字段说明统一在这里渲染；BOOLEAN 的说明由 SwitchPreference(summary) 承载，不重复
         val description = field.description
         if (field.type != "BOOLEAN" && !description.isNullOrBlank()) {
@@ -426,7 +439,8 @@ fun FieldItem(
 private fun FieldItemBody(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
-    onGlobalChanged: (() -> Unit)? = null
+    onGlobalChanged: (() -> Unit)? = null,
+    jumpAppId: String? = null
 ) {
     // 用字段名唯一标识展开状态，避免 LazyColumn 复用导致错位
     val fieldKey = "${field.type}:${field.name}"
@@ -444,10 +458,16 @@ private fun FieldItemBody(
         field.type == "BOOLEAN" -> {
             // 以字段编码为 key：行被复用/重排时不要沿用上一个字段的勾选状态
             var checked by remember(field.code) { mutableStateOf(field.value as? Boolean ?: false) }
+            val jumpContext = LocalContext.current
             SwitchPreference(
                 title = field.name ?: "",
                 summary = field.description,
                 checked = checked,
+                endActions = {
+                    if (jumpAppId != null) {
+                        JumpToAlipayIcon(jumpContext, jumpAppId)
+                    }
+                },
                 onCheckedChange = {
                     checked = it
                     if (globalField != null) applyGlobal(it) else field.setObjectValue(it)
