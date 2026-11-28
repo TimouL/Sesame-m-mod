@@ -221,8 +221,9 @@ public class MagicBox extends ModelTask {
                         }
                         continue;
                     }
-                    if (isTransactionTitle(title)) {
-                        //policy 的交易识别只认 taskType 里的拼音关键词，中文标题在这里兜一层：永不报名
+                    if (!"VIEW_TASK".equals(task.optString("actionType", "")) && isTransactionTitle(title)) {
+                        //policy 的交易识别只认 taskType 里的拼音关键词，中文标题在这里兜一层：永不报名。
+                        //浏览类（VIEW_TASK）豁免：标题含「支付/消费」字样的浏览任务（如逛一逛支付有礼）不是交易任务
                         if (!Status.hasFlagToday("gameCenterP2eTaskTried::" + taskId)) {
                             Status.flagToday("gameCenterP2eTaskTried::" + taskId);
                             Log.magicBox("游戏中心🪙逛一逛[" + title + "]#交易/履约类，不报名");
