@@ -418,10 +418,11 @@ fun FieldItem(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
     onGlobalChanged: (() -> Unit)? = null,
-    jumpAppId: String? = null
+    jumpAppId: String? = null,
+    summaryOverride: String? = null
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        FieldItemBody(field, onFieldChanged, onGlobalChanged, jumpAppId)
+        FieldItemBody(field, onFieldChanged, onGlobalChanged, jumpAppId, summaryOverride)
         // 字段说明统一在这里渲染；BOOLEAN 的说明由 SwitchPreference(summary) 承载，不重复
         val description = field.description
         if (field.type != "BOOLEAN" && !description.isNullOrBlank()) {
@@ -440,7 +441,8 @@ private fun FieldItemBody(
     field: ModelField<*>,
     onFieldChanged: (() -> Unit)? = null,
     onGlobalChanged: (() -> Unit)? = null,
-    jumpAppId: String? = null
+    jumpAppId: String? = null,
+    summaryOverride: String? = null
 ) {
     // 用字段名唯一标识展开状态，避免 LazyColumn 复用导致错位
     val fieldKey = "${field.type}:${field.name}"
@@ -461,7 +463,7 @@ private fun FieldItemBody(
             val jumpContext = LocalContext.current
             SwitchPreference(
                 title = field.name ?: "",
-                summary = field.description,
+                summary = summaryOverride ?: field.description,
                 checked = checked,
                 endActions = {
                     if (jumpAppId != null) {

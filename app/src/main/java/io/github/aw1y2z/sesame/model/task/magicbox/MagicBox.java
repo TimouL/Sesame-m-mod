@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 
 import io.github.aw1y2z.sesame.data.ConfigV2;
+import io.github.aw1y2z.sesame.data.MagicBoxP2eStats;
 import io.github.aw1y2z.sesame.data.ModelFields;
 import io.github.aw1y2z.sesame.data.ModelGroup;
 import io.github.aw1y2z.sesame.data.modelFieldExt.BooleanModelField;
@@ -127,6 +128,7 @@ public class MagicBox extends ModelTask {
             if (!"INIT".equals(todayRecord.optString("signUpStatus", ""))) {
                 //今日已签，后续轮次不再重查
                 Status.flagToday("gameCenterP2eSignIn");
+                MagicBoxP2eStats.markSignIn(todayRecord.optString("todayGoldCoinAmount", ""));
                 return;
             }
             String todayCoin = todayRecord.optString("todayGoldCoinAmount", "").trim();
@@ -157,6 +159,7 @@ public class MagicBox extends ModelTask {
                     todayCoin = afterToday.optString("todayGoldCoinAmount", "").trim();
                 }
                 Log.magicBox("游戏中心🪙赚现金签到#获得[" + (todayCoin.isEmpty() ? "?" : todayCoin) + "金币]");
+                MagicBoxP2eStats.markSignIn(todayCoin);
                 Status.flagToday("gameCenterP2eSignIn");
             }
             else {
@@ -541,6 +544,7 @@ public class MagicBox extends ModelTask {
             JSONObject data = jo.optJSONObject("data");
             if (data != null && data.optBoolean("receiveSuccess", false)) {
                 Log.magicBox("游戏中心🪙" + kind + "[" + title + "]#获得[" + data.optInt("coinAmount", 0) + "金币]");
+                MagicBoxP2eStats.addReceive(kind, data.optInt("coinAmount", 0));
                 return true;
             }
             Log.magicBox("游戏中心🪙" + kind + "[" + title + "]#领取未确认");

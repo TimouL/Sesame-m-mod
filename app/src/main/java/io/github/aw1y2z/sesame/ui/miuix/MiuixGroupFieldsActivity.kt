@@ -29,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -48,6 +49,8 @@ import androidx.compose.ui.window.DialogProperties
 import io.github.aw1y2z.sesame.data.ConfigPreload
 import io.github.aw1y2z.sesame.data.ConfigV2
 import io.github.aw1y2z.sesame.data.AccountSwitchConfig
+import io.github.aw1y2z.sesame.data.MagicBoxP2eStats
+import kotlinx.coroutines.delay
 import io.github.aw1y2z.sesame.data.Model
 import io.github.aw1y2z.sesame.data.ModelConfig
 import io.github.aw1y2z.sesame.data.ModelField
@@ -421,12 +424,35 @@ private fun GroupFieldRow(
                 )
             }
             else -> {
+                // 赚现金两行带当日状态摘要（签到状态/各类金币）：读宿主进程维护的统计文件，每 3 秒刷新
+                val isP2eStatsRow = field.code == "gameCenterP2ESignIn" || field.code == "gameCenterP2ETask"
+                var p2eStats by remember(field.code) {
+                    mutableStateOf(if (isP2eStatsRow) MagicBoxP2eStats.readFresh() else null)
+                }
+                if (isP2eStatsRow) {
+                    LaunchedEffect(field.code) {
+                        while (true) {
+                            delay(3000)
+                            p2eStats = MagicBoxP2eStats.readFresh()
+                        }
+                    }
+                }
+                val statsSummary = p2eStats?.takeIf { it.isToday }?.let { stats ->
+                    when (field.code) {
+                        "gameCenterP2ESignIn" ->
+                            if (stats.signInDone) "今日已签到 · 获得 ${stats.signInCoins} 金币" else "今日未签到"
+                        "gameCenterP2ETask" ->
+                            "今日任务领奖 ${stats.taskCoins} 金币 · 游戏领奖 ${stats.gameCoins} 金币"
+                        else -> null
+                    }
+                }
                 // 只写内存，落盘统一在 saveAndFinish() / onBackPressed() 完成
                 FieldItem(
                     field = field,
                     onFieldChanged = onDependencyChanged,
                     onGlobalChanged = { activity.globalChanged = true },
-                    jumpAppId = FIELD_JUMP_APP_IDS[field.code]
+                    jumpAppId = FIELD_JUMP_APP_IDS[field.code],
+                    summaryOverride = statsSummary
                 )
             }
         }
