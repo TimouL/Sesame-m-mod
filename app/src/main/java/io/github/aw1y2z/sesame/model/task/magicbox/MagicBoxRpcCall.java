@@ -75,6 +75,33 @@ public class MagicBoxRpcCall {
     }
 
     /**
+     * 悬浮球完成回传：2026-11-29 探针在 lite 进程抓到真实完成调用——游戏中心框架组件在悬浮球
+     * 计时结束后发 gameP2eFloatingBallComplete，参数与 Consult 同源，另加 floatingBallTypeList
+     * （取 Consult 响应值）与 oriChInfo。这才是这个系统的完成接口（类比平台任务的 platformTaskComplete）。
+     */
+    public static String p2eFloatingBallComplete(String gameId, String gameModuleId, String floatingBallType) {
+        try {
+            JSONObject args = new JSONObject();
+            args.put("appId", "2021003125685383");
+            JSONArray types = new JSONArray();
+            types.put(floatingBallType == null || floatingBallType.isEmpty()
+                    ? "P2E_GAME_BROWSE_TASK_FLOATING_BALL" : floatingBallType);
+            args.put("floatingBallTypeList", types);
+            args.put("gameId", gameId);
+            args.put("gameModuleId", gameModuleId);
+            args.put("oriChInfo", "ch_appcenter__chsub_9patch");
+            args.put("p2eVersion", "");
+            args.put("source", "ch_appcenter__chsub_9patch");
+            args.put("trafficDriverId", "");
+            return ApplicationHook.requestString(
+                    "com.alipay.gamecenteruprod.biz.rpc.p2e.gameP2eFloatingBallComplete",
+                    new JSONArray().put(args).toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * 进入游戏动作：游戏引擎在第一帧时以 {actionCode:"enterGame", gameId, paladinxVersion, source:"gameFramework"}
      * 上报（2026-11-28 抓包实证，农场乐园游戏组件的真实样本）；实验三在悬浮球登记后补发这一步，
      * 服务器可能只给「已进入游戏」的会话记时长。

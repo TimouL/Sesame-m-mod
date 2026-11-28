@@ -419,6 +419,12 @@ public class MagicBox extends ModelTask {
             if (s > 0 && s <= 300) {
                 waitSeconds = s;
             }
+            //完成回传要带的类型：取 Consult 响应里的 floatingBallTypeList 第一项
+            String ballType = "";
+            JSONArray typeList = data == null ? null : data.optJSONArray("floatingBallTypeList");
+            if (typeList != null && typeList.length() > 0) {
+                ballType = typeList.optString(0, "");
+            }
             String gameAppId = task.optString("appId", "");
             if (gameAppId.isEmpty()) {
                 Log.magicBox("游戏中心🪙玩一玩[" + title + "]#缺 appId，无法上报时长（实验二）");
@@ -449,6 +455,17 @@ public class MagicBox extends ModelTask {
                 return TaskAttemptPolicy.Outcome.UNABLE;
             }
             Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已上报游玩时长" + waitSeconds + "秒（实验二）");
+            //实验四：探针实证真实完成动作是框架组件发的 gameP2eFloatingBallComplete——
+            //登记、进游戏、时长都只是前置，记账靠这一步回传
+            String completeResp = MagicBoxRpcCall.p2eFloatingBallComplete(gameId, gameModuleId, ballType);
+            if (completeResp == null || completeResp.isEmpty()) {
+                return TaskAttemptPolicy.Outcome.RETRY;
+            }
+            if (!MessageUtil.checkSuccess(TAG, new JSONObject(completeResp))) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#悬浮球完成回传被拒（实验四）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已回传悬浮球完成（实验四）");
             return TaskAttemptPolicy.Outcome.DONE;
         }
         catch (Throwable t) {
