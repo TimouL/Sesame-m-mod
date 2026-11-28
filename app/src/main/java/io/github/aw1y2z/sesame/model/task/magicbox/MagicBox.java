@@ -180,10 +180,10 @@ public class MagicBox extends ModelTask {
      * 完成与领奖一律以重拉列表的探针复核为准，不信任动作响应；
      * 当日只试一次、临时故障有限重试、交易类不申报都由 policy 管，本方法不再自设当日标记。
      * <p>注意：{@code force} 只表示「立即跑一轮」，尝试节奏由 policy 的当日标记治理，强制执行不绕过。
-     * <p>完成尝试（Attempt）目前只做到报名 + 悬浮球时长停留：浏览的完成判定靠目标小程序真实打开后的
-     * 回传，跳转参数取任务哪个字段要等真实任务列表样本（见 {@link #dumpTaskListSample}）确认后接入；
-     * 在此之前探针复核不过的任务按 UNABLE 当日停试，次日再看——手动在 App 里做完的任务不受影响，
-     * 下一轮见 COMPLETED 照常领奖。
+     * <p>完成尝试（Attempt）目前只做到（按需）报名 + 悬浮球时长停留：2026-11-28 实测样本已确认
+     * 浏览的完成判定靠打开任务自带 jumpLink 后目标小程序的回传，跳转实现接入前，
+     * 探针复核不过的任务按 UNABLE 当日停试，次日再看——手动在 App 里做完的任务不受影响，
+     * 下一轮见 COMPLETED 照常领奖。样本存档（{@link #dumpTaskListSample}）保留，供后续核对字段变化。
      */
     public static void p2eDoViewTasks(boolean force) {
         try {
@@ -232,21 +232,26 @@ public class MagicBox extends ModelTask {
     }
 
     /**
-     * 平台任务完成尝试：UN_SIGNUP 先报名（失败按临时故障 RETRY，policy 当日最多再试 3 次，
-     * 不再像旧逻辑那样报名失败就烧掉一整天），报名后按任务下发的 floatingBall.timeSeconds 停留一次；
-     * SIGNUP_COMPLETED（含存量与刚报名的）在完成动作接入前统一返回 UNABLE——
+     * 平台任务完成尝试：报名只在任务自带 needSignUp=true 时才做（与 AntMember 游戏中心任务、
+     * AntSports 的既有约定一致，字段可能缺失故用 optBoolean 兜底；2026-11-28 实测样本里
+     * 10 条平台任务 needSignUp 全为 false，即正常情况下不报名、直接走完成动作）。
+     * 报名失败按临时故障 RETRY（policy 当日最多再试 3 次，不再像旧逻辑那样失败一次烧掉一整天）；
+     * 报名后（或本就已报名）按任务下发的 floatingBall.timeSeconds 停留一次。
+     * 真正的完成动作（打开 jumpLink 真实浏览）接入前统一返回 UNABLE——
      * policy 仍会重拉列表探一次，真完成了照样认账，未完成则当日停试、次日再看。
      */
     private static TaskAttemptPolicy.Outcome p2eAttemptPlatformTask(JSONObject task, String statusAtList) {
         String taskId = task.optString("taskId", "").trim();
         String title = task.optString("title", taskId);
         try {
-            if ("UN_SIGNUP".equals(statusAtList)) {
+            if ("UN_SIGNUP".equals(statusAtList) && task.optBoolean("needSignUp", false)) {
                 String resp = MagicBoxRpcCall.p2ePlatformTaskSignUp(taskId, task.optString("taskToken", ""));
                 if (resp == null || resp.isEmpty() || !MessageUtil.checkSuccess(TAG, new JSONObject(resp))) {
                     return TaskAttemptPolicy.Outcome.RETRY;
                 }
                 Log.magicBox("游戏中心🪙逛一逛[" + title + "]#已报名");
+            }
+            if ("UN_SIGNUP".equals(statusAtList) || "SIGNUP_COMPLETED".equals(statusAtList)) {
                 int waitSeconds = 15;
                 JSONObject ball = task.optJSONObject("floatingBall");
                 int s = ball == null ? 0 : ball.optInt("timeSeconds", 0);
@@ -254,9 +259,6 @@ public class MagicBox extends ModelTask {
                     waitSeconds = s;
                 }
                 TimeUtil.sleep((waitSeconds + 1) * 1000L);
-            }
-            else {
-                Log.magicBox("游戏中心🪙逛一逛[" + title + "]#已报名待完成，完成动作待样本确认");
             }
             return TaskAttemptPolicy.Outcome.UNABLE;
         }
