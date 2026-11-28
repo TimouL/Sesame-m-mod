@@ -75,6 +75,25 @@ public class MagicBoxRpcCall {
     }
 
     /**
+     * 进入游戏动作：游戏引擎在第一帧时以 {actionCode:"enterGame", gameId, paladinxVersion, source:"gameFramework"}
+     * 上报（2026-11-28 抓包实证，农场乐园游戏组件的真实样本）；实验三在悬浮球登记后补发这一步，
+     * 服务器可能只给「已进入游戏」的会话记时长。
+     */
+    public static String p2eSubmitEnterGame(String gameAppId) {
+        try {
+            JSONObject args = new JSONObject();
+            args.put("actionCode", "enterGame");
+            args.put("gameId", gameAppId);
+            args.put("paladinxVersion", "2.1.95");
+            args.put("source", "gameFramework");
+            return ApplicationHook.requestString("com.alipay.gamecenteruprod.biz.rpc.v3.submitUserAction",
+                    new JSONArray().put(args).toString());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
      * 平台任务报名（UN_SIGNUP 时先报名）
      */
     public static String p2ePlatformTaskSignUp(String taskId, String taskToken) {

@@ -419,15 +419,25 @@ public class MagicBox extends ModelTask {
             if (s > 0 && s <= 300) {
                 waitSeconds = s;
             }
-            Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已登记悬浮球，等待" + waitSeconds + "秒（实验）");
-            TimeUtil.sleep((waitSeconds + 1) * 1000L);
-            //实验二：登记+等待已被证实不够——服务器认的是游戏引擎的时长上报，
-            //这里代发一条 submitUserPlayDurationAction（参数与引擎实发一致，拆包实证），再由探针复核
             String gameAppId = task.optString("appId", "");
             if (gameAppId.isEmpty()) {
                 Log.magicBox("游戏中心🪙玩一玩[" + title + "]#缺 appId，无法上报时长（实验二）");
                 return TaskAttemptPolicy.Outcome.UNABLE;
             }
+            //实验三：真实链条是 登记→enterGame→时长上报；实验二缺了 enterGame 一步，
+            //服务器收了时长却没记账——这里照真实样本补发进入游戏动作，再等待、再报时长
+            String enterResp = MagicBoxRpcCall.p2eSubmitEnterGame(gameAppId);
+            if (enterResp == null || enterResp.isEmpty()) {
+                return TaskAttemptPolicy.Outcome.RETRY;
+            }
+            if (!MessageUtil.checkSuccess(TAG, new JSONObject(enterResp))) {
+                Log.magicBox("游戏中心🪙玩一玩[" + title + "]#进入游戏动作被拒（实验三）");
+                return TaskAttemptPolicy.Outcome.UNABLE;
+            }
+            Log.magicBox("游戏中心🪙玩一玩[" + title + "]#已发送进入游戏，等待" + waitSeconds + "秒（实验三）");
+            TimeUtil.sleep((waitSeconds + 1) * 1000L);
+            //实验二：登记+等待已被证实不够——服务器认的是游戏引擎的时长上报，
+            //这里代发一条 submitUserPlayDurationAction（参数与引擎实发一致，拆包实证），再由探针复核
             String reportResp = MagicBoxRpcCall.p2eSubmitPlayDuration(
                     chInfoOf(task.optString("jumpLink", "")), waitSeconds, gameAppId);
             if (reportResp == null || reportResp.isEmpty()) {
